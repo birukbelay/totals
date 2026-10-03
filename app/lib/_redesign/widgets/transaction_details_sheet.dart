@@ -5,9 +5,11 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:totals/_redesign/theme/app_colors.dart';
 import 'package:totals/_redesign/theme/app_icons.dart';
+import 'package:totals/_redesign/widgets/cash_funding_picker_sheet.dart';
 import 'package:totals/_redesign/widgets/person_picker_sheet.dart';
 import 'package:totals/_redesign/widgets/reimbursement_link_sheet.dart';
 import 'package:totals/_redesign/widgets/split_transaction_sheet.dart';
+import 'package:totals/constants/cash_constants.dart';
 import 'package:totals/models/category.dart';
 import 'package:totals/models/summary_models.dart';
 import 'package:totals/models/transaction.dart';
@@ -24,6 +26,7 @@ import 'package:totals/utils/reimbursement_utils.dart';
 import 'package:totals/utils/split_amounts.dart';
 import 'package:totals/utils/category_sort.dart';
 import 'package:totals/utils/text_utils.dart';
+import 'package:totals/utils/transaction_amounts.dart';
 import 'package:totals/utils/transaction_link_utils.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:provider/provider.dart';
@@ -1697,6 +1700,8 @@ class _TransactionDetailsSheetState extends State<_TransactionDetailsSheet> {
 
                       if (_canSplit) ..._buildSplitSection(),
 
+                      ..._buildCashTraceSection(),
+
                       _buildNoteSection(),
 
                       ReimbursementRelationshipsSection(
@@ -1855,6 +1860,87 @@ class _TransactionDetailsSheetState extends State<_TransactionDetailsSheet> {
           label: context.l10nText('Remaining (main category)'),
           amount: remaining,
         ),
+    ];
+  }
+
+  bool get _isCashSpend =>
+      _tx.bankId == CashConstants.bankId &&
+      _tx.type?.toUpperCase() == 'DEBIT' &&
+      _tx.reference.trim().isNotEmpty;
+
+  Future<void> _pickFundingSource() async {
+    final choice = await showCashFundingPickerSheet(
+      context: context,
+      spend: _tx,
+      provider: _provider,
+    );
+    if (choice == null || !mounted) return;
+    if (choice.cashLeg?.reference == _tx.fundingReference) return;
+    final updated = await _provider.setFundingSource(_tx, choice.cashLeg);
+    if (!mounted) return;
+    setState(() => _transaction = updated);
+  }
+
+  String _fundingLabel(Transaction cashLeg) {
+    final time = _parseTime(cashLeg.time);
+    final date = time == null
+        ? ''
+        : ' · ${AppDateFormat.monthDayMaybeYear(time, context: context)}';
+    return '${context.l10nText('ATM')} '
+        'ETB ${formatNumberWithComma(cashLeg.amount)}$date';
+  }
+
+  String _cashSpendLabel(Transaction spend) {
+    final name = spend.receiver?.trim().isNotEmpty == true
+        ? spend.receiver!.trim()
+        : (spend.creditor?.trim().isNotEmpty == true
+            ? spend.creditor!.trim()
+            : (_provider.getCategoryById(spend.categoryId)?.name ??
+                context.l10nText('Cash spend')));
+    final time = _parseTime(spend.time);
+    if (time == null) return name;
+    return '$name · ${AppDateFormat.monthDayMaybeYear(time, context: context)}';
+  }
+
+  /// Links a cash spend to its ATM withdrawal, and shows where the cash of
+  /// a withdrawal went.
+  List<Widget> _buildCashTraceSection() {
+    if (_isCashSpend) {
+      final source = _provider.fundingSourceFor(_tx);
+      return [
+        _DetailRow(
+          label: 'Paid from',
+          value: source == null
+              ? context.l10nText('Tap to link a withdrawal')
+              : _fundingLabel(source),
+          onTap: () {
+            unawaited(_pickFundingSource());
+          },
+          trailingIcon: AppIcons.account_balance_wallet_outlined,
+        ),
+      ];
+    }
+
+    final cashLeg = _provider.atmCashLegFor(_tx);
+    if (cashLeg == null) return const <Widget>[];
+    final spends = _provider.cashSpendsFundedByLeg(cashLeg);
+    final remaining = _provider.remainingCashFor(cashLeg);
+    return [
+      _DetailRow(
+        label: 'Cash spent',
+        value: spends.isEmpty
+            ? context.l10nText('Nothing linked yet')
+            : '${spends.length} ${context.l10nText('spends')}',
+      ),
+      for (final spend in spends)
+        _SplitPartRow(
+          label: _cashSpendLabel(spend),
+          amount: transactionDebitOutflow(spend),
+        ),
+      _SplitPartRow(
+        label: context.l10nText('Cash left from this withdrawal'),
+        amount: remaining,
+      ),
     ];
   }
 

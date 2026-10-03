@@ -13,6 +13,7 @@ import 'package:totals/services/data_sync/sync_models.dart';
 import 'package:totals/constants/cash_constants.dart';
 import 'package:totals/models/account.dart';
 import 'package:totals/utils/account_identity.dart';
+import 'package:totals/utils/atm_cash_transfers.dart';
 import 'package:totals/utils/reimbursement_utils.dart';
 
 class TransactionOwnershipUpdate {
@@ -115,6 +116,7 @@ class TransactionRepository {
       'sourceMessageId': map['sourceMessageId'],
       'sourceFingerprint': map['sourceFingerprint'],
       'sourceSubscriptionId': map['sourceSubscriptionId'],
+      'fundingReference': map['fundingReference'],
     });
   }
 
@@ -190,6 +192,7 @@ class TransactionRepository {
       'sourceMessageId': transactionToSave.sourceMessageId,
       'sourceFingerprint': transactionToSave.sourceFingerprint,
       'sourceSubscriptionId': transactionToSave.sourceSubscriptionId,
+      'fundingReference': transactionToSave.fundingReference,
       'year': year,
       'month': month,
       'day': day,
@@ -291,6 +294,7 @@ class TransactionRepository {
           'sourceMessageId': transactionToSave.sourceMessageId,
           'sourceFingerprint': transactionToSave.sourceFingerprint,
           'sourceSubscriptionId': transactionToSave.sourceSubscriptionId,
+          'fundingReference': transactionToSave.fundingReference,
           'year': year,
           'month': month,
           'day': day,
@@ -409,6 +413,49 @@ class TransactionRepository {
       records: syncRecords,
     );
     return updates.length;
+  }
+
+  /// Links a cash spend to the ATM cash CREDIT that funded it. Passing a null
+  /// [fundingReference] removes the link.
+  Future<bool> updateFundingReference(
+    String reference,
+    String? fundingReference,
+  ) async {
+    final db = await DatabaseHelper.instance.database;
+    final normalized = fundingReference?.trim();
+    final changed = await db.update(
+      'transactions',
+      {
+        'fundingReference':
+            normalized == null || normalized.isEmpty ? null : normalized,
+      },
+      where: 'reference = ?',
+      whereArgs: [reference],
+    );
+    return changed > 0;
+  }
+
+  /// References of bank withdrawals that have a Cash Wallet leg. Those
+  /// withdrawals move money into the cash pocket rather than spend it.
+  Future<Set<String>> getAtmLinkedWithdrawalReferences() async {
+    final db = await DatabaseHelper.instance.database;
+    final rows = await db.query(
+      'transactions',
+      columns: ['reference'],
+      where: 'bankId = ? AND reference LIKE ?',
+      whereArgs: [
+        CashConstants.bankId,
+        '${CashConstants.atmReferencePrefix}%',
+      ],
+    );
+    final references = <String>{};
+    for (final row in rows) {
+      final reference = atmWithdrawalReferenceForCashLeg(
+        row['reference'] as String? ?? '',
+      );
+      if (reference != null) references.add(reference);
+    }
+    return references;
   }
 
   Future<bool> updateTransactionOwnership({

@@ -34,8 +34,10 @@ import 'package:totals/utils/sms_transaction_source.dart';
 import 'package:totals/utils/sms_message_classifier.dart';
 import 'package:totals/utils/transaction_duplicate_detector.dart';
 import 'package:totals/services/account_ownership_service.dart';
+import 'package:totals/services/atm_cash_backfill_service.dart';
 import 'package:totals/services/person_matcher_service.dart';
 import 'package:totals/utils/account_identity.dart';
+import 'package:totals/utils/atm_cash_transfers.dart';
 
 enum ParseStatus {
   success,
@@ -714,18 +716,11 @@ class SmsService {
     Map<String, dynamic> details,
     String messageBody,
   ) {
-    final type = (details['type'] ?? '').toString().toUpperCase();
-    if (type != 'DEBIT') return false;
-
-    final description =
-        (details['patternDescription'] as String?)?.toLowerCase();
-    if (description != null && description.contains('atm')) {
-      return true;
-    }
-
-    final normalizedBody = messageBody.toLowerCase();
-    return normalizedBody.contains('atm') &&
-        normalizedBody.contains('withdraw');
+    return looksLikeAtmWithdrawal(
+      type: details['type']?.toString(),
+      description: details['patternDescription'] as String?,
+      body: messageBody,
+    );
   }
 
   static Future<void> _ensureCashAccount() async {
@@ -765,18 +760,9 @@ class SmsService {
     final currentCashBalance =
         await _currentCashWalletBalance(existingTransactions);
 
-    final cashTransaction = Transaction(
-      amount: withdrawal.amount,
-      reference: cashReference,
-      creditor: 'ATM withdrawal',
-      time: withdrawal.time ?? DateTime.now().toIso8601String(),
-      bankId: CashConstants.bankId,
-      type: 'CREDIT',
-      currentBalance:
-          (currentCashBalance + withdrawal.amount).toStringAsFixed(2),
-      transactionLink: withdrawal.reference,
-      accountNumber: CashConstants.defaultAccountNumber,
-      ownerAccountNumber: CashConstants.defaultAccountNumber,
+    final cashTransaction = buildAtmCashLeg(
+      withdrawal,
+      cashBalanceAfter: currentCashBalance + withdrawal.amount,
     );
 
     await TransactionRepository().saveTransaction(cashTransaction);
@@ -806,6 +792,8 @@ class SmsService {
       Transaction withdrawal) async {
     final withdrawalTime = DateTime.tryParse(withdrawal.time ?? '');
     if (withdrawalTime == null) return false;
+    // The user asked for cash entries of past withdrawals too.
+    if (await AtmCashBackfillService.isEnabledForActiveProfile()) return false;
     final cutoff = await _getAtmCashTransferCutoff();
     return withdrawalTime.isBefore(cutoff);
   }
@@ -862,6 +850,7 @@ class SmsService {
 
   static Future<void> _cleanupHistoricalAtmCashTransactions(
       DateTime cutoff) async {
+    if (await AtmCashBackfillService.isEnabledForActiveProfile()) return;
     final txRepo = TransactionRepository();
     final transactions = await txRepo.getTransactions();
     final staleReferences = transactions

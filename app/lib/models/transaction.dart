@@ -39,6 +39,9 @@ class Transaction {
   /// routing metadata; [ownerAccountNumber] is the durable ownership identity.
   final int? sourceSubscriptionId;
 
+  /// Reference of the ATM cash CREDIT that funded this cash spend, if any.
+  final String? fundingReference;
+
   Transaction({
     required this.amount,
     required this.reference,
@@ -63,6 +66,7 @@ class Transaction {
     this.sourceMessageId,
     this.sourceFingerprint,
     this.sourceSubscriptionId,
+    this.fundingReference,
   })  : categoryId = _resolvePrimaryCategoryId(categoryId, categoryIds),
         categoryIds = _normalizeCategoryIds(
           categoryIds,
@@ -191,6 +195,7 @@ class Transaction {
       sourceMessageId: json['sourceMessageId']?.toString(),
       sourceFingerprint: json['sourceFingerprint']?.toString(),
       sourceSubscriptionId: toInt(json['sourceSubscriptionId']),
+      fundingReference: _nonEmptyString(json['fundingReference']),
     );
   }
 
@@ -218,6 +223,7 @@ class Transaction {
         if (sourceType != null) 'sourceType': sourceType,
         if (sourceMessageId != null) 'sourceMessageId': sourceMessageId,
         if (sourceFingerprint != null) 'sourceFingerprint': sourceFingerprint,
+        if (fundingReference != null) 'fundingReference': fundingReference,
       };
 
   Transaction copyWith({
@@ -244,10 +250,12 @@ class Transaction {
     String? sourceMessageId,
     String? sourceFingerprint,
     int? sourceSubscriptionId,
+    String? fundingReference,
     bool clearCategoryId = false, // Flag to explicitly clear categoryId
     bool clearCategoryIds = false,
     bool clearNote = false,
     bool clearOwnerAccountNumber = false,
+    bool clearFundingReference = false,
   }) {
     int? nextCategoryId;
     List<int>? nextCategoryIds;
@@ -308,7 +316,15 @@ class Transaction {
       sourceMessageId: sourceMessageId ?? this.sourceMessageId,
       sourceFingerprint: sourceFingerprint ?? this.sourceFingerprint,
       sourceSubscriptionId: sourceSubscriptionId ?? this.sourceSubscriptionId,
+      fundingReference: clearFundingReference
+          ? null
+          : (fundingReference ?? this.fundingReference),
     );
+  }
+
+  static String? _nonEmptyString(dynamic value) {
+    final text = value?.toString().trim();
+    return text == null || text.isEmpty ? null : text;
   }
 
   bool get hasManualOwnerAssignment =>

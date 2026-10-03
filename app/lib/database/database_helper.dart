@@ -49,7 +49,7 @@ class DatabaseHelper {
     final db = await _databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 35,
+        version: 36,
         onCreate: _createDB,
         onUpgrade: _upgradeDB,
       ),
@@ -59,7 +59,7 @@ class DatabaseHelper {
     // the post-open path read-only and fail with a useful invariant name if a
     // database was produced by an unknown or interrupted build.
     try {
-      await _validateV35Schema(db);
+      await _validateV36Schema(db);
     } catch (_) {
       await db.close();
       rethrow;
@@ -122,7 +122,8 @@ class DatabaseHelper {
         sourceMessageId TEXT,
         sourceFingerprint TEXT,
         sourceSubscriptionId INTEGER,
-        ownerAssignmentSource TEXT
+        ownerAssignmentSource TEXT,
+        fundingReference TEXT
       )
     ''');
 
@@ -322,6 +323,9 @@ class DatabaseHelper {
       'CREATE INDEX idx_transactions_sourceSubscriptionId ON transactions(sourceType, sourceSubscriptionId)',
     );
     await db.execute(
+      'CREATE INDEX idx_transactions_fundingReference ON transactions(fundingReference)',
+    );
+    await db.execute(
       'CREATE INDEX idx_accounts_smsSubscriptionId ON accounts(bank, smsSubscriptionId)',
     );
     await db.execute('''
@@ -374,6 +378,9 @@ class DatabaseHelper {
       if (newVersion >= 35) {
         await _migrateV34ToV35(db);
       }
+      if (newVersion >= 36) {
+        await _migrateV35ToV36(db);
+      }
       return;
     }
 
@@ -397,6 +404,9 @@ class DatabaseHelper {
       if (newVersion >= 35) {
         await _migrateV34ToV35(db);
       }
+      if (newVersion >= 36) {
+        await _migrateV35ToV36(db);
+      }
       return;
     }
 
@@ -417,6 +427,9 @@ class DatabaseHelper {
       if (newVersion >= 35) {
         await _migrateV34ToV35(db);
       }
+      if (newVersion >= 36) {
+        await _migrateV35ToV36(db);
+      }
       return;
     }
 
@@ -434,6 +447,9 @@ class DatabaseHelper {
       if (newVersion >= 35) {
         await _migrateV34ToV35(db);
       }
+      if (newVersion >= 36) {
+        await _migrateV35ToV36(db);
+      }
       return;
     }
 
@@ -448,6 +464,9 @@ class DatabaseHelper {
       if (newVersion >= 35) {
         await _migrateV34ToV35(db);
       }
+      if (newVersion >= 36) {
+        await _migrateV35ToV36(db);
+      }
       return;
     }
 
@@ -459,6 +478,9 @@ class DatabaseHelper {
       if (newVersion >= 35) {
         await _migrateV34ToV35(db);
       }
+      if (newVersion >= 36) {
+        await _migrateV35ToV36(db);
+      }
       return;
     }
 
@@ -467,11 +489,22 @@ class DatabaseHelper {
       if (newVersion >= 35) {
         await _migrateV34ToV35(db);
       }
+      if (newVersion >= 36) {
+        await _migrateV35ToV36(db);
+      }
       return;
     }
 
     if (oldVersion < 35) {
       await _migrateV34ToV35(db);
+      if (newVersion >= 36) {
+        await _migrateV35ToV36(db);
+      }
+      return;
+    }
+
+    if (oldVersion < 36) {
+      await _migrateV35ToV36(db);
       return;
     }
 
@@ -1108,6 +1141,27 @@ class DatabaseHelper {
       () => _ensureTransactionSplitsSchema(db),
     );
     await _runV28Stage('v35 final validation', () => _validateV35Schema(db));
+  }
+
+  Future<void> _migrateV35ToV36(Database db) async {
+    await _runV28Stage(
+      'v36 cash funding reference',
+      () => _ensureFundingReferenceSchema(db),
+    );
+    await _runV28Stage('v36 final validation', () => _validateV36Schema(db));
+  }
+
+  /// Cash funding (v36): a cash spend can point at the ATM cash CREDIT that
+  /// funded it through `transactions.fundingReference`.
+  Future<void> _ensureFundingReferenceSchema(Database db) async {
+    await _v28EnsureColumns(db, 'transactions', {
+      'fundingReference':
+          'ALTER TABLE transactions ADD COLUMN fundingReference TEXT',
+    });
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_transactions_fundingReference '
+      'ON transactions(fundingReference)',
+    );
   }
 
   Future<void> _runV28Stage(
@@ -2155,6 +2209,14 @@ class DatabaseHelper {
     ''');
     if (triggers.length != 2) {
       throw StateError('v34 people triggers are missing');
+    }
+  }
+
+  Future<void> _validateV36Schema(Database db) async {
+    await _validateV35Schema(db);
+    final columns = await _v28Columns(db, 'transactions');
+    if (!columns.contains('fundingReference')) {
+      throw StateError('v36 invariant transactions missing fundingReference');
     }
   }
 

@@ -43,10 +43,13 @@ class BudgetService {
       transactions.map((transaction) => transaction.reference),
     );
     final splitsByReference = await _splitRepository.getAllSplits();
+    final atmWithdrawals =
+        await _transactionRepository.getAtmLinkedWithdrawalReferences();
     return _sumNetSpending(
       transactions,
       reimbursedByReference,
       splitsByReference,
+      atmWithdrawals,
       categoryIds: ids,
     );
   }
@@ -123,6 +126,7 @@ class BudgetService {
 
     final statuses = List<BudgetStatus?>.filled(budgets.length, null);
     Map<String, List<TransactionSplit>>? splitsByReference;
+    Set<String>? atmWithdrawals;
     for (final requests in requestsByPeriod.values) {
       final periodStart = requests.first.periodStart;
       final periodEnd = requests.first.periodEnd;
@@ -137,12 +141,15 @@ class BudgetService {
         transactions.map((transaction) => transaction.reference),
       );
       splitsByReference ??= await _splitRepository.getAllSplits();
+      atmWithdrawals ??=
+          await _transactionRepository.getAtmLinkedWithdrawalReferences();
 
       for (final request in requests) {
         final spent = _sumNetSpending(
           transactions,
           reimbursedByReference,
           splitsByReference,
+          atmWithdrawals,
           categoryIds: request.budget.selectedCategoryIds.toSet(),
         );
         statuses[request.index] = _buildStatus(
@@ -161,18 +168,24 @@ class BudgetService {
 
   /// Net spending of [transactions] in [categoryIds], or all spending when
   /// [categoryIds] is empty. Splits move parts of a payment into their own
-  /// categories; loans and bill shares never count as spending.
+  /// categories; loans and bill shares never count as spending. ATM
+  /// withdrawals in [atmWithdrawals] only move money into the cash pocket,
+  /// so just their fees count; the cash is counted when it is spent.
   double _sumNetSpending(
     Iterable<Transaction> transactions,
     Map<String, double> reimbursedByReference,
-    Map<String, List<TransactionSplit>> splitsByReference, {
+    Map<String, List<TransactionSplit>> splitsByReference,
+    Set<String> atmWithdrawals, {
     required Set<int> categoryIds,
   }) {
     return transactions.fold<double>(
       0.0,
       (sum, transaction) {
         final reference = transaction.reference.trim();
-        final gross = transactionDebitOutflow(transaction);
+        final gross = transactionExpenseAmount(
+          transaction,
+          isSelfTransfer: atmWithdrawals.contains(reference),
+        );
         final reimbursed = reimbursedByReference[reference] ?? 0.0;
         final net = expenseAmountAfterReimbursement(
           grossExpense: gross,

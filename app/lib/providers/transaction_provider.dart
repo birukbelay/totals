@@ -33,6 +33,7 @@ import 'package:totals/utils/account_balance_resolver.dart';
 import 'package:totals/utils/account_reconciliation.dart';
 import 'package:totals/utils/account_identity.dart';
 import 'package:totals/utils/account_sort.dart';
+import 'package:totals/utils/atm_cash_transfers.dart';
 import 'package:totals/utils/auto_categorization_rules_share_payload.dart';
 import 'package:totals/utils/category_filter_utils.dart';
 import 'package:totals/utils/loan_debt_utils.dart';
@@ -198,6 +199,7 @@ class TransactionProvider with ChangeNotifier {
   List<AutoCategoryPromptDismissal> _autoCategoryPromptDismissals = [];
   bool _autoCategorizationEnabled = true;
   Map<String, String> _selfTransferLabelByReference = {};
+  Set<String> _atmLinkedWithdrawalRefs = {};
   Map<int, String> _bankNamesById = {
     CashConstants.bankId: CashConstants.bankName,
   };
@@ -839,7 +841,7 @@ class TransactionProvider with ChangeNotifier {
   double budgetExpenseAmountForTransaction(Transaction transaction) {
     return transactionNetExpenseAmount(
       transaction,
-      isSelfTransfer: false,
+      isSelfTransfer: isAtmLinkedWithdrawal(transaction),
       reimbursedAmount: reimbursedExpenseAmount(transaction),
     );
   }
@@ -865,6 +867,70 @@ class TransactionProvider with ChangeNotifier {
 
     await _recomputeAfterTransactionMutation();
     unawaited(WidgetService.refreshExpenseWidget());
+    return updated;
+  }
+
+  /// Whether [transaction] is a bank ATM withdrawal with a Cash Wallet leg.
+  /// Its principal moved into the cash pocket, so only its fees are spent.
+  bool isAtmLinkedWithdrawal(Transaction transaction) {
+    return transaction.type == 'DEBIT' &&
+        _atmLinkedWithdrawalRefs.contains(transaction.reference);
+  }
+
+  /// The ATM cash leg [transaction] draws from, if any.
+  Transaction? fundingSourceFor(Transaction transaction) {
+    return transactionByReference(transaction.fundingReference);
+  }
+
+  /// The Cash Wallet leg of an ATM withdrawal: the leg itself, or the leg
+  /// created for a bank withdrawal.
+  Transaction? atmCashLegFor(Transaction transaction) {
+    if (isAtmCashLeg(transaction)) return transaction;
+    if (!isAtmLinkedWithdrawal(transaction)) return null;
+    return transactionByReference(
+      CashConstants.buildAtmReference(transaction.reference),
+    );
+  }
+
+  /// Cash spends linked to the ATM cash leg [cashLeg], newest first.
+  List<Transaction> cashSpendsFundedByLeg(Transaction cashLeg) {
+    final spends = cashSpendsFundedBy(cashLeg.reference, _allTransactions);
+    return spends.toList()
+      ..sort((a, b) => (b.time ?? '').compareTo(a.time ?? ''));
+  }
+
+  /// Cash still unspent from the ATM cash leg [cashLeg].
+  double remainingCashFor(Transaction cashLeg) {
+    return atmCashRemaining(cashLeg, _allTransactions);
+  }
+
+  /// ATM cash legs [spend] could be linked to, newest first.
+  List<Transaction> atmFundingOptionsFor(Transaction spend) {
+    return atmFundingCandidates(spend, _allTransactions);
+  }
+
+  /// Links the cash spend [transaction] to the ATM cash leg [cashLeg], or
+  /// removes the link when [cashLeg] is null.
+  Future<Transaction> setFundingSource(
+    Transaction transaction,
+    Transaction? cashLeg,
+  ) async {
+    if (cashLeg != null && !isAtmCashLeg(cashLeg)) {
+      throw ArgumentError.value(
+        cashLeg.reference,
+        'cashLeg',
+        'Only ATM cash entries can fund a cash spend',
+      );
+    }
+    final updated = cashLeg == null
+        ? transaction.copyWith(clearFundingReference: true)
+        : transaction.copyWith(fundingReference: cashLeg.reference);
+    await _transactionRepo.updateFundingReference(
+      transaction.reference,
+      cashLeg?.reference,
+    );
+    _replaceTransactionLocally(updated);
+    await _recomputeAfterTransactionMutation();
     return updated;
   }
 
@@ -1513,6 +1579,7 @@ class TransactionProvider with ChangeNotifier {
     List<Transaction> transactions,
   ) {
     final labels = <String, String>{};
+    final linkedWithdrawals = <String>{};
     final byReference = {
       for (final transaction in transactions)
         transaction.reference: transaction,
@@ -1529,8 +1596,10 @@ class TransactionProvider with ChangeNotifier {
 
       labels[reference] = 'from self';
       labels[linkedReference] = 'to self';
+      linkedWithdrawals.add(linkedReference);
     }
 
+    _atmLinkedWithdrawalRefs = linkedWithdrawals;
     return labels;
   }
 
@@ -2067,7 +2136,13 @@ class TransactionProvider with ChangeNotifier {
   }
 
   // Method to handle new incoming SMS transaction
-  Future<void> addTransaction(Transaction t) async {
+  Future<void> addTransaction(Transaction transaction) async {
+    var t = transaction;
+    if (t.fundingReference == null) {
+      // Cash spends draw from the oldest ATM withdrawal with cash left.
+      final source = pickAtmFundingSource(t, _allTransactions);
+      if (source != null) t = t.copyWith(fundingReference: source.reference);
+    }
     await _transactionRepo.saveTransaction(t);
     // Update account balance if match found
     // This logic was in onBackgroundMessage, we should probably centralize it here or in a Service

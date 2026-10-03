@@ -26,6 +26,7 @@ import 'package:totals/repositories/account_repository.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:totals/services/account_registration_service.dart';
 import 'package:totals/services/account_transaction_reparse_service.dart';
+import 'package:totals/services/atm_cash_backfill_service.dart';
 import 'package:totals/services/account_sync_status_service.dart';
 import 'package:totals/services/bank_detection_service.dart';
 import 'package:totals/services/bank_statement_description_service.dart';
@@ -69,6 +70,7 @@ enum _SubTab { transactions, analytics, ledger }
 
 enum _AccountMenuAction {
   viewTransactions,
+  backfillAtmCash,
   reparse,
   generateStatement,
   delete,
@@ -4116,6 +4118,9 @@ class RedesignMoneyPageState extends State<RedesignMoneyPage>
       case _AccountMenuAction.viewTransactions:
         _openAccountTransactionsPage(account);
         break;
+      case _AccountMenuAction.backfillAtmCash:
+        await _backfillAtmCash(provider);
+        break;
       case _AccountMenuAction.reparse:
         await _openAccountsReparseSheet(
           provider,
@@ -4130,6 +4135,22 @@ class RedesignMoneyPageState extends State<RedesignMoneyPage>
         _showDeleteConfirmation(account);
         break;
     }
+  }
+
+  Future<void> _backfillAtmCash(TransactionProvider provider) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final created = await AtmCashBackfillService().backfill();
+    await provider.loadData();
+    if (!mounted) return;
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          created == 0
+              ? context.l10nTextRead('No past ATM withdrawals were missing.')
+              : '${context.l10nTextRead('Added cash entries:')} $created',
+        ),
+      ),
+    );
   }
 
   Future<void> _generateBankStatement(
@@ -15940,6 +15961,15 @@ class _AccountActionsSheetState extends State<_AccountActionsSheet> {
               _AccountMenuAction.viewTransactions,
             ),
           ),
+          if (widget.isCash)
+            _AccountActionTile(
+              icon: AppIcons.account_balance_wallet_outlined,
+              label: 'Create cash entries for past ATM withdrawals',
+              onTap: () => _select(
+                context,
+                _AccountMenuAction.backfillAtmCash,
+              ),
+            ),
           if (!widget.isCash) ...[
             _AccountActionTile(
               icon: AppIcons.refresh,

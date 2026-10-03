@@ -7,7 +7,7 @@ import 'package:totals/database/database_helper.dart';
 
 import 'database_fixture.dart';
 
-const _schemaVersion = 35;
+const _schemaVersion = 36;
 
 void main() {
   late Directory tempDirectory;
@@ -37,7 +37,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
         final count = (await db.rawQuery(
           'SELECT COUNT(*) AS count FROM categories',
         ))
@@ -54,7 +54,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
 
         final transaction = (await db.query(
           'transactions',
@@ -111,7 +111,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
 
         final renamed = (await db.query(
           'categories',
@@ -153,7 +153,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
 
         final renamed = (await db.query(
           'categories',
@@ -185,7 +185,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
 
         final legacyRule = (await db.query(
           'auto_category_rules',
@@ -215,7 +215,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
 
         final entry = (await db.query(
           'loan_debt_entries',
@@ -269,7 +269,7 @@ void main() {
 
       for (var pass = 0; pass < 2; pass++) {
         await _withDatabase(databasePath, (db) async {
-          await _expectHealthyV35(db);
+          await _expectHealthyV36(db);
 
           final transaction = (await db.query(
             'transactions',
@@ -311,7 +311,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
 
         final transaction = (await db.query(
           'transactions',
@@ -371,7 +371,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
 
         final custom = (await db.query(
           'categories',
@@ -405,7 +405,7 @@ void main() {
     });
 
     await _withDatabase(databasePath, (db) async {
-      await _expectHealthyV35(db);
+      await _expectHealthyV36(db);
       await db.insert('transactions', {
         'amount': 25,
         'reference': 'source-sms-migration',
@@ -454,7 +454,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV35(db);
+        await _expectHealthyV36(db);
 
         final people = await db.query('people', orderBy: 'name');
         expect(people.map((row) => row['name']), ['Abebe Kebede', 'Sara']);
@@ -513,7 +513,7 @@ void main() {
     });
 
     await _withDatabase(databasePath, (db) async {
-      await _expectHealthyV35(db);
+      await _expectHealthyV36(db);
       await db.insert('transactions', {'amount': 300, 'reference': 'split-p'});
       final personId = await db.insert('people', {
         'name': 'Sara',
@@ -559,6 +559,33 @@ void main() {
       expect(await db.query('transaction_splits'), isEmpty);
     });
   });
+
+  test('v35 database adds the cash funding reference', () async {
+    await _withDatabase(databasePath, (db) async {
+      await db.insert('transactions', {'amount': 50, 'reference': 'cash-1'});
+      await db.execute(
+        'DROP INDEX IF EXISTS idx_transactions_fundingReference',
+      );
+      await db.execute('ALTER TABLE transactions DROP COLUMN fundingReference');
+      await db.setVersion(35);
+    });
+
+    await _withDatabase(databasePath, (db) async {
+      await _expectHealthyV36(db);
+      final row = (await db.query(
+        'transactions',
+        where: 'reference = ?',
+        whereArgs: ['cash-1'],
+      ))
+          .single;
+      expect(row['fundingReference'], isNull);
+      final indexes = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'index' "
+        "AND name = 'idx_transactions_fundingReference'",
+      );
+      expect(indexes, hasLength(1));
+    });
+  });
 }
 
 Future<T> _withDatabase<T>(
@@ -579,7 +606,7 @@ Future<T> _withDatabase<T>(
   }
 }
 
-Future<void> _expectHealthyV35(Database db) async {
+Future<void> _expectHealthyV36(Database db) async {
   expect(await db.getVersion(), _schemaVersion);
 
   final integrity = await db.rawQuery('PRAGMA integrity_check');
@@ -630,6 +657,7 @@ Future<void> _expectHealthyV35(Database db) async {
       'ownerAccountNumber',
       'sourceSubscriptionId',
       'ownerAssignmentSource',
+      'fundingReference',
     }),
   );
   expect(
