@@ -193,7 +193,7 @@ class SmsService {
             messageDate: receivedAt,
             sourceMessageId: message.id,
             sourceSubscriptionId: message.subscriptionId);
-        if (tx != null && onTransactionSaved != null) {
+        if (tx != null && !tx.isUnlabeled && onTransactionSaved != null) {
           onTransactionSaved!(tx);
         }
       }
@@ -1159,18 +1159,9 @@ class SmsService {
       );
     }
 
-    // Check if the user has a registered account for this bank
+    // Messages from banks without a registered account are still saved, as
+    // unlabeled rows, so labeling the account later needs no inbox reparse.
     final registeredAccounts = await AccountRepository().getAccounts();
-    final hasRegisteredAccount =
-        registeredAccounts.any((a) => a.bank == bank.id);
-    if (!hasRegisteredAccount) {
-      print(
-          "debug: No registered account for bank ${bank.name} (${bank.id}) - skipping.");
-      return const ParseResult(
-        status: ParseStatus.unregisteredBank,
-        reason: "No registered account for this bank",
-      );
-    }
 
     // 1. Load Patterns
     final SmsConfigService configService = SmsConfigService();
@@ -1217,7 +1208,8 @@ class SmsService {
           );
           if (canonicalResult != null) {
             if (canonicalResult.status == ParseStatus.success &&
-                canonicalResult.transaction != null) {
+                canonicalResult.transaction != null &&
+                !canonicalResult.transaction!.isUnlabeled) {
               await _showTransactionNotificationUnlessSelfTransfer(
                 canonicalResult.transaction!,
               );
@@ -1326,6 +1318,9 @@ class SmsService {
         }
       }
     }
+    if (resolvedOwner == null) {
+      details['isUnlabeled'] = 1;
+    }
     final smsSource = SmsTransactionSource.fromParts(
       bankId: parsedBankId,
       messageId: sourceMessageId,
@@ -1395,7 +1390,9 @@ class SmsService {
         try {
           final existing = existingTx
               .firstWhere((transaction) => transaction.reference == newRef);
-          await _createCashTransactionForAtmWithdrawal(existing, existingTx);
+          if (!existing.isUnlabeled) {
+            await _createCashTransactionForAtmWithdrawal(existing, existingTx);
+          }
         } catch (e) {
           print("debug: Error reconciling cash transfer: $e");
         }
@@ -1468,7 +1465,9 @@ class SmsService {
       messageBody: messageBody,
     );
 
-    if (_isAtmWithdrawal(details, messageBody)) {
+    // Unlabeled rows stay out of cash, notifications and budgets until the
+    // account is labeled.
+    if (!savedTx.isUnlabeled && _isAtmWithdrawal(details, messageBody)) {
       try {
         await _createCashTransactionForAtmWithdrawal(savedTx, existingTx);
       } catch (e) {
@@ -1476,11 +1475,11 @@ class SmsService {
       }
     }
 
-    if (notifyUser) {
+    if (notifyUser && !savedTx.isUnlabeled) {
       await _showTransactionNotificationUnlessSelfTransfer(savedTx);
     }
 
-    if (savedTx.type == 'DEBIT') {
+    if (!savedTx.isUnlabeled && savedTx.type == 'DEBIT') {
       try {
         await BudgetAlertService().checkAndNotifyBudgetAlerts();
       } catch (e) {

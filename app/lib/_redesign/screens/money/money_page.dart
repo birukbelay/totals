@@ -41,6 +41,7 @@ import 'package:totals/utils/split_amounts.dart';
 import 'package:totals/utils/account_sort.dart';
 import 'package:totals/utils/text_utils.dart';
 import 'package:totals/utils/transaction_amounts.dart';
+import 'package:totals/utils/unlabeled_accounts.dart';
 import 'package:totals/_redesign/screens/loans_page.dart';
 import 'package:totals/widgets/add_cash_transaction_sheet.dart';
 import 'package:totals/widgets/inline_bank_selector.dart';
@@ -3617,10 +3618,12 @@ class RedesignMoneyPageState extends State<RedesignMoneyPage>
             if (isOverview)
               _BankGrid(
                 bankSummaries: bankSummaries,
+                unlabeledGroups: provider.unlabeledAccountGroups,
                 showBalance: _showAccountBalances,
                 syncStatusService: syncStatusService,
                 onBankTap: (bankId) => setState(() => _selectedBankId = bankId),
                 onAddAccount: _showAddAccountSheet,
+                onLabelAccount: _showLabelAccountSheet,
               )
             else ...[
               ...accounts.map((account) {
@@ -4058,6 +4061,24 @@ class RedesignMoneyPageState extends State<RedesignMoneyPage>
         initialBankId: bankId ?? _selectedBankId,
         initialBank: initialBank,
         accountHolderNameSuggestion: accountHolderNameSuggestion,
+        onAccountAdded: () {
+          Provider.of<TransactionProvider>(context, listen: false).loadData();
+        },
+      ),
+    );
+  }
+
+  void _showLabelAccountSheet(UnlabeledAccountGroup group) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AddAccountSheet(
+        initialBankId: group.bankId,
+        initialAccountNumber: group.accountNumber,
+        accountHolderNameSuggestion: group.holderNameSuggestion,
+        // The messages are already saved; labeling needs no inbox reparse.
+        initialSyncPreviousSms: false,
         onAccountAdded: () {
           Provider.of<TransactionProvider>(context, listen: false).loadData();
         },
@@ -14912,6 +14933,7 @@ class _AccountsBalanceCard extends StatelessWidget {
 
 class _BankGrid extends StatefulWidget {
   final List<BankSummary> bankSummaries;
+  final List<UnlabeledAccountGroup> unlabeledGroups;
   final bool showBalance;
   final AccountSyncStatusService syncStatusService;
   final ValueChanged<int> onBankTap;
@@ -14920,13 +14942,16 @@ class _BankGrid extends StatefulWidget {
     bank_model.Bank? initialBank,
     String? accountHolderNameSuggestion,
   }) onAddAccount;
+  final ValueChanged<UnlabeledAccountGroup> onLabelAccount;
 
   const _BankGrid({
     required this.bankSummaries,
+    required this.unlabeledGroups,
     required this.showBalance,
     required this.syncStatusService,
     required this.onBankTap,
     required this.onAddAccount,
+    required this.onLabelAccount,
   });
 
   @override
@@ -14992,6 +15017,11 @@ class _BankGridState extends State<_BankGrid> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    // A bank with saved unlabeled messages is offered below as an account to
+    // label instead of as a detected bank.
+    final unlabeledBankIds = {
+      for (final group in widget.unlabeledGroups) group.bankId,
+    };
     final cards = <Widget>[
       ...widget.bankSummaries.map((bank) {
         final isCash = bank.bankId == CashConstants.bankId;
@@ -15008,15 +15038,17 @@ class _BankGridState extends State<_BankGrid> with WidgetsBindingObserver {
           onTap: () => widget.onBankTap(bank.bankId),
         );
       }),
-      ..._detectedBanks.map((detected) => _DetectedBankCard(
-            detected: detected,
-            onTap: () => widget.onAddAccount(
-              bankId: detected.bank.id,
-              initialBank: detected.bank,
-              accountHolderNameSuggestion:
-                  detected.accountHolderSuggestions.join(' / '),
-            ),
-          )),
+      ..._detectedBanks
+          .where((detected) => !unlabeledBankIds.contains(detected.bank.id))
+          .map((detected) => _DetectedBankCard(
+                detected: detected,
+                onTap: () => widget.onAddAccount(
+                  bankId: detected.bank.id,
+                  initialBank: detected.bank,
+                  accountHolderNameSuggestion:
+                      detected.accountHolderSuggestions.join(' / '),
+                ),
+              )),
       _AddAccountCard(onTap: () => widget.onAddAccount()),
     ];
 
@@ -15037,7 +15069,160 @@ class _BankGridState extends State<_BankGrid> with WidgetsBindingObserver {
         ),
       );
     }
+    if (widget.unlabeledGroups.isNotEmpty) {
+      rows.add(
+        _UnlabeledAccountsSection(
+          groups: widget.unlabeledGroups,
+          onLabel: widget.onLabelAccount,
+        ),
+      );
+    }
     return Column(children: rows);
+  }
+}
+
+class _UnlabeledAccountsSection extends StatelessWidget {
+  final List<UnlabeledAccountGroup> groups;
+  final ValueChanged<UnlabeledAccountGroup> onLabel;
+
+  const _UnlabeledAccountsSection({
+    required this.groups,
+    required this.onLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            context.l10nText('Unlabeled accounts'),
+            style: TextStyle(
+              color: AppColors.textPrimary(context),
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            context.l10nText(
+              'Saved bank messages from accounts you have not added. Label one to count it in your totals.',
+            ),
+            style: TextStyle(
+              color: AppColors.textSecondary(context),
+              fontSize: 12,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 10),
+          for (final group in groups)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _UnlabeledAccountCard(
+                group: group,
+                onTap: () => onLabel(group),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnlabeledAccountCard extends StatelessWidget {
+  final UnlabeledAccountGroup group;
+  final VoidCallback onTap;
+
+  const _UnlabeledAccountCard({
+    required this.group,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final accountLabel =
+        group.accountNumber ?? context.l10nText('Unknown account');
+    final countLabel =
+        _formatLocalizedCount(context, group.count, 'message', 'messages');
+    final lastTime = group.lastTime;
+    final subtitle = lastTime == null
+        ? countLabel
+        : '$countLabel · ${context.l10nText('Last')} '
+            '${AppDateFormat.monthDayMaybeYear(lastTime, context: context)}';
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.cardColor(context),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.borderColor(context)),
+        ),
+        child: Row(
+          children: [
+            _BankLogoCircle(imagePath: _getBankImage(group.bankId), size: 40),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${_localizedBankLabel(context, group.bankId)} · '
+                    '$accountLabel',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: AppColors.textPrimary(context),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      color: AppColors.textSecondary(context),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppColors.primaryLight.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    AppIcons.add_rounded,
+                    size: 12,
+                    color: AppColors.primaryLight,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    context.l10nText('Label account'),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primaryLight,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -16782,13 +16967,17 @@ class _SetCashAmountSheetState extends State<_SetCashAmountSheet> {
 class _AddAccountSheet extends StatefulWidget {
   final int? initialBankId;
   final bank_model.Bank? initialBank;
+  final String? initialAccountNumber;
   final String? accountHolderNameSuggestion;
+  final bool initialSyncPreviousSms;
   final VoidCallback onAccountAdded;
 
   const _AddAccountSheet({
     this.initialBankId,
     this.initialBank,
+    this.initialAccountNumber,
     this.accountHolderNameSuggestion,
+    this.initialSyncPreviousSms = true,
     required this.onAccountAdded,
   });
 
@@ -16807,11 +16996,15 @@ class _AddAccountSheetState extends State<_AddAccountSheet> {
   bool _isFormValid = false;
   bool _isSubmitting = false;
   bool _isLoadingBanks = true;
-  bool _syncPreviousSms = true;
+  late bool _syncPreviousSms = widget.initialSyncPreviousSms;
 
   @override
   void initState() {
     super.initState();
+    final initialAccountNumber = widget.initialAccountNumber?.trim();
+    if (initialAccountNumber != null && initialAccountNumber.isNotEmpty) {
+      _accountNumberController.text = initialAccountNumber;
+    }
     _accountNumberController.addListener(_validateForm);
     _holderNameController.addListener(_validateForm);
     _loadBanks();

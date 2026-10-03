@@ -42,20 +42,126 @@ class TransactionRepository {
     return await _profileRepo.getActiveProfileId();
   }
 
-  Future<List<Transaction>> getTransactions() async {
+  /// Transactions of the active profile, newest first.
+  ///
+  /// [includeUnlabeled] false leaves out rows saved for accounts the user has
+  /// not labeled yet. Totals, budgets and lists should pass false; parsing,
+  /// deduplication and export need every row.
+  Future<List<Transaction>> getTransactions({
+    bool includeUnlabeled = true,
+  }) async {
     final db = await DatabaseHelper.instance.database;
     final activeProfileId = await _getActiveProfileId();
 
-    final List<Map<String, dynamic>> maps = activeProfileId != null
-        ? await db.query(
-            'transactions',
-            where: 'profileId = ?',
-            whereArgs: [activeProfileId],
-            orderBy: 'time DESC, id DESC',
-          )
-        : await db.query('transactions', orderBy: 'time DESC, id DESC');
+    final whereParts = <String>[];
+    final whereArgs = <Object?>[];
+    if (activeProfileId != null) {
+      whereParts.add('profileId = ?');
+      whereArgs.add(activeProfileId);
+    }
+    if (!includeUnlabeled) whereParts.add('isUnlabeled = 0');
+
+    final List<Map<String, dynamic>> maps = await db.query(
+      'transactions',
+      where: whereParts.isEmpty ? null : whereParts.join(' AND '),
+      whereArgs: whereArgs.isEmpty ? null : whereArgs,
+      orderBy: 'time DESC, id DESC',
+    );
 
     return maps.map<Transaction>(_transactionFromMap).toList();
+  }
+
+  /// Rows saved from SMS of accounts the user has not labeled yet, newest
+  /// first.
+  Future<List<Transaction>> getUnlabeledTransactions({int? bankId}) async {
+    final db = await DatabaseHelper.instance.database;
+    final activeProfileId = await _getActiveProfileId();
+
+    final whereParts = <String>['isUnlabeled = 1'];
+    final whereArgs = <Object?>[];
+    if (activeProfileId != null) {
+      whereParts.add('profileId = ?');
+      whereArgs.add(activeProfileId);
+    }
+    if (bankId != null) {
+      whereParts.add('bankId = ?');
+      whereArgs.add(bankId);
+    }
+
+    final maps = await db.query(
+      'transactions',
+      where: whereParts.join(' AND '),
+      whereArgs: whereArgs,
+      orderBy: 'time DESC, id DESC',
+    );
+    return maps.map<Transaction>(_transactionFromMap).toList();
+  }
+
+  /// Marks the unlabeled rows in [references] as belonging to
+  /// [ownerAccountNumber] and queues them for sync. Returns how many rows
+  /// changed.
+  Future<int> labelTransactions({
+    required Iterable<String> references,
+    required String ownerAccountNumber,
+  }) async {
+    final uniqueReferences = references.toSet().toList(growable: false);
+    if (uniqueReferences.isEmpty) return 0;
+
+    final db = await DatabaseHelper.instance.database;
+    final activeProfileId = await _getActiveProfileId();
+    var changed = 0;
+    const maxSqlVars = 900;
+    for (var start = 0; start < uniqueReferences.length; start += maxSqlVars) {
+      final candidateEnd = start + maxSqlVars;
+      final end = candidateEnd < uniqueReferences.length
+          ? candidateEnd
+          : uniqueReferences.length;
+      final chunk = uniqueReferences.sublist(start, end);
+      final placeholders = List.filled(chunk.length, '?').join(', ');
+      final where = StringBuffer(
+        'isUnlabeled = 1 AND reference IN ($placeholders)',
+      );
+      final args = <Object?>[...chunk];
+      if (activeProfileId != null) {
+        where.write(' AND profileId = ?');
+        args.add(activeProfileId);
+      }
+      changed += await db.update(
+        'transactions',
+        <String, Object?>{
+          'isUnlabeled': 0,
+          'ownerAccountNumber': ownerAccountNumber,
+          'ownerAssignmentSource': Transaction.automaticOwnerAssignment,
+        },
+        where: where.toString(),
+        whereArgs: args,
+      );
+    }
+    if (changed == 0) return 0;
+
+    for (final reference in uniqueReferences) {
+      final where = <String>['reference = ?', 'isUnlabeled = 0'];
+      final args = <Object?>[reference];
+      if (activeProfileId != null) {
+        where.add('profileId = ?');
+        args.add(activeProfileId);
+      }
+      final rows = await db.query(
+        'transactions',
+        where: where.join(' AND '),
+        whereArgs: args,
+        limit: 1,
+      );
+      if (rows.isEmpty) continue;
+      await SyncEnqueuer.instance.onEntityWritten(
+        entity: SyncEntity.transactions,
+        entityRef: reference,
+        op: SyncOp.upsert,
+        row: Map<String, dynamic>.from(rows.single)
+          ..remove('sourceSubscriptionId'),
+      );
+    }
+    return changed;
   }
 
   Future<Transaction?> getTransactionByReference(String reference) async {
@@ -117,6 +223,7 @@ class TransactionRepository {
       'sourceFingerprint': map['sourceFingerprint'],
       'sourceSubscriptionId': map['sourceSubscriptionId'],
       'fundingReference': map['fundingReference'],
+      'isUnlabeled': map['isUnlabeled'],
     });
   }
 
@@ -193,6 +300,7 @@ class TransactionRepository {
       'sourceFingerprint': transactionToSave.sourceFingerprint,
       'sourceSubscriptionId': transactionToSave.sourceSubscriptionId,
       'fundingReference': transactionToSave.fundingReference,
+      'isUnlabeled': transactionToSave.isUnlabeled ? 1 : 0,
       'year': year,
       'month': month,
       'day': day,
@@ -213,6 +321,9 @@ class TransactionRepository {
 
     print(
         "debug: Transaction ${transactionToSave.reference} saved successfully");
+
+    // Unlabeled rows stay on the device until the account is labeled.
+    if (transactionToSave.isUnlabeled) return;
 
     await SyncEnqueuer.instance.onEntityWritten(
       entity: SyncEntity.transactions,
@@ -295,6 +406,7 @@ class TransactionRepository {
           'sourceFingerprint': transactionToSave.sourceFingerprint,
           'sourceSubscriptionId': transactionToSave.sourceSubscriptionId,
           'fundingReference': transactionToSave.fundingReference,
+          'isUnlabeled': transactionToSave.isUnlabeled ? 1 : 0,
           'year': year,
           'month': month,
           'day': day,
@@ -303,6 +415,7 @@ class TransactionRepository {
         conflictAlgorithm: ConflictAlgorithm.ignore,
       );
 
+      if (transactionToSave.isUnlabeled) continue;
       syncRecords.add(MapEntry(transactionToSave.reference, {
         'reference': transactionToSave.reference,
         'type': transactionToSave.type,
@@ -491,6 +604,8 @@ class TransactionRepository {
     final values = <String, Object?>{
       'ownerAccountNumber': ownerAccountNumber,
       'ownerAssignmentSource': ownerAssignmentSource,
+      // A row with an owner belongs to a registered account.
+      'isUnlabeled': 0,
       if (sourceSubscriptionId != null && sourceSubscriptionId >= 0)
         'sourceSubscriptionId': sourceSubscriptionId,
       if (sourceMessageId != null && sourceMessageId.trim().isNotEmpty)
@@ -585,6 +700,7 @@ class TransactionRepository {
           'ownerAccountNumber': update.ownerAccountNumber,
           if (update.ownerAssignmentSource != null)
             'ownerAssignmentSource': update.ownerAssignmentSource,
+          if (update.ownerAccountNumber != null) 'isUnlabeled': 0,
           // Clearing a disproven owner must also clear its SIM shortcut;
           // otherwise read-time ownership would immediately assign it again.
           if (update.ownerAccountNumber == null)
@@ -625,6 +741,7 @@ class TransactionRepository {
             <String, dynamic>{'reference': update.reference},
       );
       row['ownerAccountNumber'] = update.ownerAccountNumber;
+      if (update.ownerAccountNumber != null) row['isUnlabeled'] = 0;
       if (update.ownerAssignmentSource != null) {
         row['ownerAssignmentSource'] = update.ownerAssignmentSource;
       }
@@ -673,6 +790,7 @@ class TransactionRepository {
     DateTime endDate, {
     int? bankId,
     String? type,
+    bool includeUnlabeled = true,
   }) async {
     final db = await DatabaseHelper.instance.database;
 
@@ -723,6 +841,8 @@ class TransactionRepository {
       whereParts.add('type = ?');
       whereArgs.add(type);
     }
+
+    if (!includeUnlabeled) whereParts.add('isUnlabeled = 0');
 
     final where = whereParts.join(' AND ');
 

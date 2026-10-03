@@ -42,6 +42,10 @@ class Transaction {
   /// Reference of the ATM cash CREDIT that funded this cash spend, if any.
   final String? fundingReference;
 
+  /// Parsed from a bank SMS before the user registered the account it belongs
+  /// to. Unlabeled rows are kept out of totals until the account is labeled.
+  final bool isUnlabeled;
+
   Transaction({
     required this.amount,
     required this.reference,
@@ -67,6 +71,7 @@ class Transaction {
     this.sourceFingerprint,
     this.sourceSubscriptionId,
     this.fundingReference,
+    this.isUnlabeled = false,
   })  : categoryId = _resolvePrimaryCategoryId(categoryId, categoryIds),
         categoryIds = _normalizeCategoryIds(
           categoryIds,
@@ -196,6 +201,7 @@ class Transaction {
       sourceFingerprint: json['sourceFingerprint']?.toString(),
       sourceSubscriptionId: toInt(json['sourceSubscriptionId']),
       fundingReference: _nonEmptyString(json['fundingReference']),
+      isUnlabeled: _toBool(json['isUnlabeled']),
     );
   }
 
@@ -224,6 +230,7 @@ class Transaction {
         if (sourceMessageId != null) 'sourceMessageId': sourceMessageId,
         if (sourceFingerprint != null) 'sourceFingerprint': sourceFingerprint,
         if (fundingReference != null) 'fundingReference': fundingReference,
+        if (isUnlabeled) 'isUnlabeled': 1,
       };
 
   Transaction copyWith({
@@ -251,6 +258,7 @@ class Transaction {
     String? sourceFingerprint,
     int? sourceSubscriptionId,
     String? fundingReference,
+    bool? isUnlabeled,
     bool clearCategoryId = false, // Flag to explicitly clear categoryId
     bool clearCategoryIds = false,
     bool clearNote = false,
@@ -319,7 +327,18 @@ class Transaction {
       fundingReference: clearFundingReference
           ? null
           : (fundingReference ?? this.fundingReference),
+      isUnlabeled: isUnlabeled ?? this.isUnlabeled,
     );
+  }
+
+  static bool _toBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value is String) {
+      final text = value.trim().toLowerCase();
+      return text == '1' || text == 'true';
+    }
+    return false;
   }
 
   static String? _nonEmptyString(dynamic value) {

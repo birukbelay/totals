@@ -19,6 +19,7 @@ import 'package:totals/repositories/person_repository.dart';
 import 'package:totals/repositories/reimbursement_repository.dart';
 import 'package:totals/repositories/shared_expense_repository.dart';
 import 'package:totals/repositories/transaction_repository.dart';
+import 'package:totals/repositories/transaction_source_sms_repository.dart';
 import 'package:totals/repositories/transaction_split_repository.dart';
 import 'package:totals/constants/cash_constants.dart';
 import 'package:totals/services/bank_config_service.dart';
@@ -41,6 +42,7 @@ import 'package:totals/utils/reimbursement_utils.dart';
 import 'package:totals/utils/split_amounts.dart';
 import 'package:totals/utils/text_utils.dart';
 import 'package:totals/utils/transaction_amounts.dart';
+import 'package:totals/utils/unlabeled_accounts.dart';
 
 class TransactionTotals {
   final double income;
@@ -185,6 +187,8 @@ class TransactionProvider with ChangeNotifier {
   final PersonRepository _personRepo = PersonRepository();
   final TransactionSplitRepository _splitRepo = TransactionSplitRepository();
   final ReimbursementRepository _reimbursementRepo = ReimbursementRepository();
+  final TransactionSourceSmsRepository _sourceSmsRepo =
+      TransactionSourceSmsRepository();
   final BudgetAlertService _budgetAlertService = BudgetAlertService();
   final AutoCategorizationService _autoCategorizationService =
       AutoCategorizationService.instance;
@@ -223,6 +227,8 @@ class TransactionProvider with ChangeNotifier {
   DateTime _selectedDate = DateTime.now();
 
   List<Transaction> _allTransactions = [];
+  List<Transaction> _unlabeledTransactions = const [];
+  List<UnlabeledAccountGroup> _unlabeledAccountGroups = const [];
   Set<String> _sharedExpenseLinkedRefs = {};
   final Set<String> _sharedExpenseSharingRefs = {};
   Map<String, String> _loanDebtPersonByReference = {};
@@ -262,6 +268,13 @@ class TransactionProvider with ChangeNotifier {
   // Getters
   List<Transaction> get transactions => _transactions;
   List<Transaction> get allTransactions => _allTransactions;
+
+  /// Saved bank SMS transactions whose account isn't registered yet.
+  List<Transaction> get unlabeledTransactions => _unlabeledTransactions;
+
+  /// [unlabeledTransactions] grouped by bank account, largest first.
+  List<UnlabeledAccountGroup> get unlabeledAccountGroups =>
+      _unlabeledAccountGroups;
   Set<String> get sharedExpenseLinkedRefs => _sharedExpenseLinkedRefs;
   Set<String> get sharedExpenseSharingRefs =>
       Set.unmodifiable(_sharedExpenseSharingRefs);
@@ -1000,7 +1013,15 @@ class TransactionProvider with ChangeNotifier {
       };
       await _reloadAutoCategorizationState();
 
-      _allTransactions = await _transactionRepo.getTransactions();
+      // Rows from accounts the user hasn't labeled yet stay out of every
+      // total until the account is registered.
+      final loadedTransactions = await _transactionRepo.getTransactions();
+      _allTransactions = loadedTransactions
+          .where((transaction) => !transaction.isUnlabeled)
+          .toList();
+      _unlabeledTransactions = List<Transaction>.unmodifiable(
+        loadedTransactions.where((transaction) => transaction.isUnlabeled),
+      );
       await _reloadReimbursementState();
       try {
         _sharedExpenseLinkedRefs =
@@ -1030,6 +1051,7 @@ class TransactionProvider with ChangeNotifier {
         for (final bank in banks) bank.id: bank.image,
       };
       _rebuildSelfTransferLabels(_allTransactions, banks);
+      await _reloadUnlabeledAccountGroups(banks);
 
       await _calculateSummaries(_allTransactions);
       _filterTransactions(_allTransactions);
@@ -1041,6 +1063,33 @@ class TransactionProvider with ChangeNotifier {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _reloadUnlabeledAccountGroups(List<Bank> banks) async {
+    if (_unlabeledTransactions.isEmpty) {
+      _unlabeledAccountGroups = const [];
+      return;
+    }
+    var bodyByReference = const <String, String>{};
+    try {
+      final sources = await _sourceSmsRepo.getForTransactionReferences(
+        _unlabeledTransactions.map((transaction) => transaction.reference),
+      );
+      bodyByReference = {
+        for (final source in sources) source.transactionReference: source.body,
+      };
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('debug: Could not load unlabeled SMS bodies: $error');
+      }
+    }
+    _unlabeledAccountGroups = List<UnlabeledAccountGroup>.unmodifiable(
+      buildUnlabeledAccountGroups(
+        _unlabeledTransactions,
+        banksById: {for (final bank in banks) bank.id: bank},
+        bodyByReference: bodyByReference,
+      ),
+    );
   }
 
   Future<void> _refreshLoanDebtPeople() async {

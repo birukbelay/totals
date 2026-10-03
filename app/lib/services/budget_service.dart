@@ -28,6 +28,7 @@ class BudgetService {
       startDate,
       endDate,
       type: 'DEBIT', // Only count expenses
+      includeUnlabeled: false,
     );
 
     final ids = <int>{};
@@ -135,6 +136,7 @@ class BudgetService {
         periodStart,
         periodEnd,
         type: 'DEBIT',
+        includeUnlabeled: false,
       );
       final reimbursedByReference =
           await _reimbursementRepository.getAppliedTotalsForExpenses(

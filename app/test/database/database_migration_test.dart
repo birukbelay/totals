@@ -7,7 +7,7 @@ import 'package:totals/database/database_helper.dart';
 
 import 'database_fixture.dart';
 
-const _schemaVersion = 36;
+const _schemaVersion = 37;
 
 void main() {
   late Directory tempDirectory;
@@ -37,7 +37,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
         final count = (await db.rawQuery(
           'SELECT COUNT(*) AS count FROM categories',
         ))
@@ -54,7 +54,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
 
         final transaction = (await db.query(
           'transactions',
@@ -111,7 +111,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
 
         final renamed = (await db.query(
           'categories',
@@ -153,7 +153,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
 
         final renamed = (await db.query(
           'categories',
@@ -185,7 +185,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
 
         final legacyRule = (await db.query(
           'auto_category_rules',
@@ -215,7 +215,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
 
         final entry = (await db.query(
           'loan_debt_entries',
@@ -269,7 +269,7 @@ void main() {
 
       for (var pass = 0; pass < 2; pass++) {
         await _withDatabase(databasePath, (db) async {
-          await _expectHealthyV36(db);
+          await _expectHealthyV37(db);
 
           final transaction = (await db.query(
             'transactions',
@@ -311,7 +311,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
 
         final transaction = (await db.query(
           'transactions',
@@ -371,7 +371,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
 
         final custom = (await db.query(
           'categories',
@@ -405,7 +405,7 @@ void main() {
     });
 
     await _withDatabase(databasePath, (db) async {
-      await _expectHealthyV36(db);
+      await _expectHealthyV37(db);
       await db.insert('transactions', {
         'amount': 25,
         'reference': 'source-sms-migration',
@@ -454,7 +454,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV36(db);
+        await _expectHealthyV37(db);
 
         final people = await db.query('people', orderBy: 'name');
         expect(people.map((row) => row['name']), ['Abebe Kebede', 'Sara']);
@@ -513,7 +513,7 @@ void main() {
     });
 
     await _withDatabase(databasePath, (db) async {
-      await _expectHealthyV36(db);
+      await _expectHealthyV37(db);
       await db.insert('transactions', {'amount': 300, 'reference': 'split-p'});
       final personId = await db.insert('people', {
         'name': 'Sara',
@@ -571,7 +571,7 @@ void main() {
     });
 
     await _withDatabase(databasePath, (db) async {
-      await _expectHealthyV36(db);
+      await _expectHealthyV37(db);
       final row = (await db.query(
         'transactions',
         where: 'reference = ?',
@@ -584,6 +584,27 @@ void main() {
         "AND name = 'idx_transactions_fundingReference'",
       );
       expect(indexes, hasLength(1));
+    });
+  });
+
+  test('v36 database adds the unlabeled flag', () async {
+    await _withDatabase(databasePath, (db) async {
+      await db.insert('transactions', {'amount': 75, 'reference': 'old-1'});
+      await db.execute('DROP INDEX IF EXISTS idx_transactions_isUnlabeled');
+      await db.execute('ALTER TABLE transactions DROP COLUMN isUnlabeled');
+      await db.setVersion(36);
+    });
+
+    await _withDatabase(databasePath, (db) async {
+      await _expectHealthyV37(db);
+      final row = (await db.query(
+        'transactions',
+        where: 'reference = ?',
+        whereArgs: ['old-1'],
+      ))
+          .single;
+      // Rows saved before v37 all belonged to a registered account.
+      expect(row['isUnlabeled'], 0);
     });
   });
 }
@@ -606,7 +627,7 @@ Future<T> _withDatabase<T>(
   }
 }
 
-Future<void> _expectHealthyV36(Database db) async {
+Future<void> _expectHealthyV37(Database db) async {
   expect(await db.getVersion(), _schemaVersion);
 
   final integrity = await db.rawQuery('PRAGMA integrity_check');
@@ -658,6 +679,7 @@ Future<void> _expectHealthyV36(Database db) async {
       'sourceSubscriptionId',
       'ownerAssignmentSource',
       'fundingReference',
+      'isUnlabeled',
     }),
   );
   expect(
@@ -694,6 +716,7 @@ Future<void> _expectHealthyV36(Database db) async {
     containsAll(<String>{
       'idx_transactions_ownerAccount',
       'idx_transactions_sourceSubscriptionId',
+      'idx_transactions_isUnlabeled',
     }),
   );
   expect(

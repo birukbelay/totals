@@ -64,7 +64,9 @@ class TransactionsHandler {
       }
 
       // Fetch all transactions from database
-      List<Transaction> transactions = await _transactionRepo.getTransactions();
+      List<Transaction> transactions = await _transactionRepo.getTransactions(
+        includeUnlabeled: false,
+      );
 
       // Filter out orphaned transactions (transactions without matching accounts)
       transactions = await _filterOrphanedTransactions(transactions);
@@ -109,7 +111,9 @@ class TransactionsHandler {
   /// Returns transaction statistics grouped by bank account
   Future<Response> _getTransactionStats(Request request) async {
     try {
-      final transactions = await _transactionRepo.getTransactions();
+      final transactions = await _transactionRepo.getTransactions(
+        includeUnlabeled: false,
+      );
 
       // Group transactions by bankId
       final Map<int, List<Transaction>> groupedByBank = {};

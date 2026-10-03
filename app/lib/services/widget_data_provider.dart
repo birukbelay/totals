@@ -72,6 +72,7 @@ class WidgetDataProvider {
       start,
       end,
       type: type,
+      includeUnlabeled: false,
     );
 
     return _filterOutSelfTransfers(transactions);
@@ -113,7 +114,9 @@ class WidgetDataProvider {
     List<Transaction> transactions,
   ) async {
     if (transactions.isEmpty) return transactions;
-    final allTransactions = await _transactionRepository.getTransactions();
+    final allTransactions = await _transactionRepository.getTransactions(
+      includeUnlabeled: false,
+    );
     final selfTransferReferences =
         await _buildSelfTransferReferences(allTransactions);
     final manualSelfCategoryIds = await _loadManualSelfCategoryIds();

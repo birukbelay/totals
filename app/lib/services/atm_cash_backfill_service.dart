@@ -13,6 +13,10 @@ import 'package:totals/utils/transaction_amounts.dart';
 /// SMS. Nothing is reparsed from the inbox.
 class AtmCashBackfillService {
   static const String _enabledPrefPrefix = 'atm_cash_backfill_enabled_profile_';
+  // Written by SmsService; withdrawals before it get no cash entry unless the
+  // user opted in to the backfill.
+  static const String _cutoffPrefPrefix =
+      'atm_cash_transfer_cutoff_iso_profile_';
 
   final TransactionRepository _transactionRepository;
   final TransactionSourceSmsRepository _sourceSmsRepository;
@@ -35,24 +39,48 @@ class AtmCashBackfillService {
     return prefs.getBool(await _enabledPrefKey()) ?? false;
   }
 
-  static Future<String> _enabledPrefKey() async {
+  static Future<String> _enabledPrefKey() =>
+      _profilePrefKey(_enabledPrefPrefix);
+
+  static Future<String> _profilePrefKey(String prefix) async {
     final profileId = await ProfileRepository().getActiveProfileId();
-    return profileId != null
-        ? '$_enabledPrefPrefix$profileId'
-        : '${_enabledPrefPrefix}default';
+    return profileId != null ? '$prefix$profileId' : '${prefix}default';
   }
 
   /// Creates the missing cash entries and returns how many were added.
   Future<int> backfill() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(await _enabledPrefKey(), true);
+    return _createMissingLegs();
+  }
 
-    final transactions = await _transactionRepository.getTransactions();
+  /// Creates the cash entries a newly labeled account would have received
+  /// had it been registered when its SMS arrived: every withdrawal when the
+  /// user opted in to the backfill, otherwise only those after the cash
+  /// cutoff. Returns how many were added.
+  Future<int> createLegsForLabeledAccount() async {
+    if (await isEnabledForActiveProfile()) return _createMissingLegs();
+    final prefs = await SharedPreferences.getInstance();
+    final cutoff = DateTime.tryParse(
+      prefs.getString(await _profilePrefKey(_cutoffPrefPrefix)) ?? '',
+    );
+    if (cutoff == null) return 0;
+    return _createMissingLegs(notBefore: cutoff);
+  }
+
+  Future<int> _createMissingLegs({DateTime? notBefore}) async {
+    final transactions = await _transactionRepository.getTransactions(
+      includeUnlabeled: false,
+    );
     final references = {
       for (final transaction in transactions) transaction.reference,
     };
     final candidates = transactions.where((transaction) {
       final bankId = transaction.bankId;
+      if (notBefore != null) {
+        final time = DateTime.tryParse(transaction.time ?? '');
+        if (time == null || time.isBefore(notBefore)) return false;
+      }
       return transaction.type == 'DEBIT' &&
           bankId != null &&
           bankId != CashConstants.bankId &&

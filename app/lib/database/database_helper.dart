@@ -49,7 +49,7 @@ class DatabaseHelper {
     final db = await _databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 36,
+        version: 37,
         onCreate: _createDB,
         onUpgrade: _upgradeDB,
       ),
@@ -59,7 +59,7 @@ class DatabaseHelper {
     // the post-open path read-only and fail with a useful invariant name if a
     // database was produced by an unknown or interrupted build.
     try {
-      await _validateV36Schema(db);
+      await _validateV37Schema(db);
     } catch (_) {
       await db.close();
       rethrow;
@@ -123,7 +123,8 @@ class DatabaseHelper {
         sourceFingerprint TEXT,
         sourceSubscriptionId INTEGER,
         ownerAssignmentSource TEXT,
-        fundingReference TEXT
+        fundingReference TEXT,
+        isUnlabeled INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -326,6 +327,9 @@ class DatabaseHelper {
       'CREATE INDEX idx_transactions_fundingReference ON transactions(fundingReference)',
     );
     await db.execute(
+      'CREATE INDEX idx_transactions_isUnlabeled ON transactions(isUnlabeled, bankId)',
+    );
+    await db.execute(
       'CREATE INDEX idx_accounts_smsSubscriptionId ON accounts(bank, smsSubscriptionId)',
     );
     await db.execute('''
@@ -381,6 +385,9 @@ class DatabaseHelper {
       if (newVersion >= 36) {
         await _migrateV35ToV36(db);
       }
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
       return;
     }
 
@@ -407,6 +414,9 @@ class DatabaseHelper {
       if (newVersion >= 36) {
         await _migrateV35ToV36(db);
       }
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
       return;
     }
 
@@ -430,6 +440,9 @@ class DatabaseHelper {
       if (newVersion >= 36) {
         await _migrateV35ToV36(db);
       }
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
       return;
     }
 
@@ -450,6 +463,9 @@ class DatabaseHelper {
       if (newVersion >= 36) {
         await _migrateV35ToV36(db);
       }
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
       return;
     }
 
@@ -467,6 +483,9 @@ class DatabaseHelper {
       if (newVersion >= 36) {
         await _migrateV35ToV36(db);
       }
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
       return;
     }
 
@@ -481,6 +500,9 @@ class DatabaseHelper {
       if (newVersion >= 36) {
         await _migrateV35ToV36(db);
       }
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
       return;
     }
 
@@ -492,6 +514,9 @@ class DatabaseHelper {
       if (newVersion >= 36) {
         await _migrateV35ToV36(db);
       }
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
       return;
     }
 
@@ -500,11 +525,22 @@ class DatabaseHelper {
       if (newVersion >= 36) {
         await _migrateV35ToV36(db);
       }
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
       return;
     }
 
     if (oldVersion < 36) {
       await _migrateV35ToV36(db);
+      if (newVersion >= 37) {
+        await _migrateV36ToV37(db);
+      }
+      return;
+    }
+
+    if (oldVersion < 37) {
+      await _migrateV36ToV37(db);
       return;
     }
 
@@ -1161,6 +1197,28 @@ class DatabaseHelper {
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_transactions_fundingReference '
       'ON transactions(fundingReference)',
+    );
+  }
+
+  Future<void> _migrateV36ToV37(Database db) async {
+    await _runV28Stage(
+      'v37 unlabeled transactions',
+      () => _ensureUnlabeledSchema(db),
+    );
+    await _runV28Stage('v37 final validation', () => _validateV37Schema(db));
+  }
+
+  /// Unlabeled accounts (v37): bank SMS parsed before the user registered the
+  /// account are kept with `transactions.isUnlabeled = 1` and left out of
+  /// totals until the account is labeled.
+  Future<void> _ensureUnlabeledSchema(Database db) async {
+    await _v28EnsureColumns(db, 'transactions', {
+      'isUnlabeled': 'ALTER TABLE transactions ADD COLUMN isUnlabeled '
+          'INTEGER NOT NULL DEFAULT 0',
+    });
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_transactions_isUnlabeled '
+      'ON transactions(isUnlabeled, bankId)',
     );
   }
 
@@ -2209,6 +2267,14 @@ class DatabaseHelper {
     ''');
     if (triggers.length != 2) {
       throw StateError('v34 people triggers are missing');
+    }
+  }
+
+  Future<void> _validateV37Schema(Database db) async {
+    await _validateV36Schema(db);
+    final columns = await _v28Columns(db, 'transactions');
+    if (!columns.contains('isUnlabeled')) {
+      throw StateError('v37 invariant transactions missing isUnlabeled');
     }
   }
 

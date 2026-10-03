@@ -89,7 +89,9 @@ class SummaryHandler {
   Future<Response> _getSummary(Request request) async {
     try {
       final accounts = await _accountRepo.getAccounts();
-      final allTransactions = await _transactionRepo.getTransactions();
+      final allTransactions = await _transactionRepo.getTransactions(
+        includeUnlabeled: false,
+      );
       final transactions = await _filterOrphanedTransactions(allTransactions);
       final reimbursementReferences =
           await _reimbursementReferences(transactions);
@@ -155,7 +157,9 @@ class SummaryHandler {
   Future<Response> _getSummaryByBank(Request request) async {
     try {
       final accounts = await _accountRepo.getAccounts();
-      final allTransactions = await _transactionRepo.getTransactions();
+      final allTransactions = await _transactionRepo.getTransactions(
+        includeUnlabeled: false,
+      );
       final transactions = await _filterOrphanedTransactions(allTransactions);
       final reimbursementReferences =
           await _reimbursementReferences(transactions);
@@ -247,7 +251,9 @@ class SummaryHandler {
   Future<Response> _getSummaryByAccount(Request request) async {
     try {
       final accounts = await _accountRepo.getAccounts();
-      final allTransactions = await _transactionRepo.getTransactions();
+      final allTransactions = await _transactionRepo.getTransactions(
+        includeUnlabeled: false,
+      );
       final transactions = await _filterOrphanedTransactions(allTransactions);
       final reimbursementReferences =
           await _reimbursementReferences(transactions);

@@ -15,6 +15,7 @@ import 'package:totals/utils/sms_transaction_source.dart';
 import 'package:totals/utils/sms_message_classifier.dart';
 import 'package:totals/utils/transaction_duplicate_detector.dart';
 import 'package:totals/services/account_ownership_service.dart';
+import 'package:totals/services/unlabeled_account_service.dart';
 import 'package:totals/utils/account_identity.dart';
 
 const int _dashenBankId = 4;
@@ -62,6 +63,18 @@ class AccountRegistrationService {
     );
     await _accountRepo.saveAccount(account);
     print("debug: Account registered: $accountNumber");
+
+    // SMS saved while the account was unlabeled join it right away, without
+    // reading the inbox again.
+    try {
+      final labeled = await UnlabeledAccountService().labelSavedTransactions(
+        bankId: bankId,
+        accountNumber: accountNumber,
+      );
+      print("debug: Labeled ${labeled.labeled} saved transactions");
+    } catch (e) {
+      print("debug: Error labeling saved transactions: $e");
+    }
 
     // Sync previous SMS in background if requested
     if (syncPreviousSms) {
