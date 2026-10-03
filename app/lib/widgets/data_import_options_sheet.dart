@@ -33,6 +33,7 @@ class _DataImportOptionsSheetState extends State<DataImportOptionsSheet> {
   bool _includeFailedParses = true;
   bool _includeSmsPatterns = true;
   bool _includeLoansAndDebts = true;
+  bool _includePeople = true;
 
   @override
   void initState() {
@@ -53,6 +54,7 @@ class _DataImportOptionsSheetState extends State<DataImportOptionsSheet> {
         includeFailedParses: _includeFailedParses,
         includeSmsPatterns: _includeSmsPatterns,
         includeLoansAndDebts: _includeLoansAndDebts,
+        includePeople: _includePeople,
       ),
     );
   }
@@ -219,6 +221,12 @@ class _DataImportOptionsSheetState extends State<DataImportOptionsSheet> {
                   value: _includeLoansAndDebts,
                   onChanged: (value) =>
                       setState(() => _includeLoansAndDebts = value),
+                ),
+                _ImportSectionSwitch(
+                  title: context.l10nText('People and bill shares'),
+                  count: widget.summary.personCount,
+                  value: _includePeople,
+                  onChanged: (value) => setState(() => _includePeople = value),
                 ),
                 _ImportSectionSwitch(
                   title: context.l10nText('SMS parsing configuration'),

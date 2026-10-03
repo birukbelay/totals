@@ -33,6 +33,7 @@ class _DataExportOptionsSheetState extends State<DataExportOptionsSheet> {
   bool _includeAutoCategorization = true;
   bool _includeFailedParses = true;
   bool _includeLoansAndDebts = true;
+  bool _includePeople = true;
   bool _includeQuickAccessAccounts = true;
 
   @override
@@ -86,6 +87,7 @@ class _DataExportOptionsSheetState extends State<DataExportOptionsSheet> {
         includeAutoCategorization: _includeAutoCategorization,
         includeFailedParses: _includeFailedParses,
         includeLoansAndDebts: _includeLoansAndDebts,
+        includePeople: _includePeople,
         includeQuickAccessAccounts: _includeQuickAccessAccounts,
       ),
     );
@@ -289,6 +291,17 @@ class _DataExportOptionsSheetState extends State<DataExportOptionsSheet> {
                   value: _includeLoansAndDebts,
                   onChanged: (value) =>
                       setState(() => _includeLoansAndDebts = value),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(context.l10nText('People and bill shares')),
+                  subtitle: Text(
+                    context.l10nText(
+                      'Includes people, their accounts and phones, and loan splits.',
+                    ),
+                  ),
+                  value: _includePeople,
+                  onChanged: (value) => setState(() => _includePeople = value),
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,

@@ -304,7 +304,7 @@ void main() {
       }),
     );
 
-    expect(DataExportImportService.currentSchemaVersion, 11);
+    expect(DataExportImportService.currentSchemaVersion, 12);
     expect(normalized['schemaVersion'], 9);
 
     final account = Map<String, dynamic>.from(
@@ -326,7 +326,7 @@ void main() {
     expect(transaction.containsKey('sourceSubscriptionId'), isFalse);
   });
 
-  test('schema-less ownership payload is recognized as the current schema', () {
+  test('schema-less ownership payload is recognized as schema v11', () {
     final normalized = DataExportImportService.normalizeImportPayload(
       jsonEncode({
         'transactions': [

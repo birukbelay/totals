@@ -10,14 +10,18 @@ import 'package:totals/models/category.dart';
 import 'package:totals/models/transaction.dart';
 import 'package:totals/models/failed_parse.dart';
 import 'package:totals/models/loan_debt_entry.dart';
+import 'package:totals/models/person.dart';
 import 'package:totals/models/reimbursement_allocation.dart';
 import 'package:totals/models/sms_pattern.dart';
+import 'package:totals/models/transaction_split.dart';
 import 'package:totals/models/user_account.dart';
 import 'package:totals/repositories/account_repository.dart';
 import 'package:totals/repositories/budget_repository.dart';
 import 'package:totals/repositories/category_repository.dart';
+import 'package:totals/repositories/person_repository.dart';
 import 'package:totals/repositories/transaction_repository.dart';
 import 'package:totals/repositories/transaction_source_sms_repository.dart';
+import 'package:totals/repositories/transaction_split_repository.dart';
 import 'package:totals/repositories/failed_parse_repository.dart';
 import 'package:totals/repositories/loan_debt_repository.dart';
 import 'package:totals/repositories/reimbursement_repository.dart';
@@ -48,6 +52,11 @@ class DataExportOptions {
   final bool includeLoansAndDebts;
   final bool includeQuickAccessAccounts;
 
+  /// People, their identifiers, transaction links, and the loan and bill
+  /// share splits that point at them. Category splits always travel with
+  /// their transactions.
+  final bool includePeople;
+
   const DataExportOptions({
     this.bankIds,
     this.transactionStart,
@@ -57,6 +66,7 @@ class DataExportOptions {
     this.includeFailedParses = true,
     this.includeLoansAndDebts = true,
     this.includeQuickAccessAccounts = true,
+    this.includePeople = true,
   });
 
   bool get isFullBackup =>
@@ -67,7 +77,8 @@ class DataExportOptions {
       includeAutoCategorization &&
       includeFailedParses &&
       includeLoansAndDebts &&
-      includeQuickAccessAccounts;
+      includeQuickAccessAccounts &&
+      includePeople;
 
   bool get hasTransactionFilter =>
       bankIds != null || transactionStart != null || transactionEnd != null;
@@ -111,6 +122,7 @@ class DataExportOptions {
       'includeFailedParses': includeFailedParses,
       'includeLoansAndDebts': includeLoansAndDebts,
       'includeQuickAccessAccounts': includeQuickAccessAccounts,
+      'includePeople': includePeople,
     };
   }
 }
@@ -138,6 +150,7 @@ class DataImportOptions {
   final bool includeFailedParses;
   final bool includeSmsPatterns;
   final bool includeLoansAndDebts;
+  final bool includePeople;
 
   const DataImportOptions({
     this.bankIds,
@@ -146,6 +159,7 @@ class DataImportOptions {
     this.includeFailedParses = true,
     this.includeSmsPatterns = true,
     this.includeLoansAndDebts = true,
+    this.includePeople = true,
   });
 
   bool get isFullImport =>
@@ -154,7 +168,8 @@ class DataImportOptions {
       includeAutoCategorization &&
       includeFailedParses &&
       includeSmsPatterns &&
-      includeLoansAndDebts;
+      includeLoansAndDebts &&
+      includePeople;
 
   bool includesBank(int? bankId) {
     final selectedBankIds = bankIds;
@@ -173,6 +188,7 @@ class BackupImportSummary {
   final int failedParseCount;
   final int smsPatternCount;
   final int loanDebtEntryCount;
+  final int personCount;
 
   const BackupImportSummary({
     required this.schemaVersion,
@@ -184,11 +200,12 @@ class BackupImportSummary {
     required this.failedParseCount,
     required this.smsPatternCount,
     required this.loanDebtEntryCount,
+    this.personCount = 0,
   });
 }
 
 class DataExportImportService {
-  static const int currentSchemaVersion = 11;
+  static const int currentSchemaVersion = 12;
   static const int minimumSchemaVersion = 1;
 
   final AccountRepository _accountRepo = AccountRepository();
@@ -201,6 +218,8 @@ class DataExportImportService {
   final LoanDebtRepository _loanDebtRepo = LoanDebtRepository();
   final ReimbursementRepository _reimbursementRepo = ReimbursementRepository();
   final UserAccountRepository _userAccountRepo = UserAccountRepository();
+  final PersonRepository _personRepo = PersonRepository();
+  final TransactionSplitRepository _splitRepo = TransactionSplitRepository();
   final AutoCategorizationService _autoCategorizationService =
       AutoCategorizationService.instance;
   final SmsConfigService _smsConfigService = SmsConfigService();
@@ -302,6 +321,16 @@ class DataExportImportService {
       final loanDebtRepayments = await _getLoanDebtRepaymentsFromDb();
       final reimbursementAllocations =
           await _reimbursementRepo.getAllocations();
+      final people = options.includePeople
+          ? await _personRepo.getPeople()
+          : const <Person>[];
+      final personIdentifiers = options.includePeople
+          ? await _personRepo.getIdentifiers()
+          : const <PersonIdentifier>[];
+      final transactionPeople = options.includePeople
+          ? await _personRepo.getTransactionLinks()
+          : const <String, TransactionPersonLink>{};
+      final transactionSplits = await _splitRepo.getAllSplits();
 
       final scopedAccounts =
           accounts.where((account) => options.includesBank(account.bank));
@@ -352,6 +381,20 @@ class DataExportImportService {
                     allocation.expenseTransactionReference,
                   ),
             );
+      final scopedTransactionPeople = transactionPeople.values.where(
+        (link) =>
+            scopedTransactionReferences.contains(link.transactionReference),
+      );
+      // Without people, only the category part of a split can be restored.
+      final scopedTransactionSplits = <TransactionSplit>[
+        for (final entry in transactionSplits.entries)
+          if (scopedTransactionReferences.contains(entry.key))
+            for (final split in entry.value)
+              if (options.includePeople || !split.isOwedByPerson)
+                options.includePeople
+                    ? split
+                    : split.copyWith(clearPerson: true),
+      ];
 
       final exportData = {
         'schemaVersion': currentSchemaVersion,
@@ -396,6 +439,13 @@ class DataExportImportService {
             scopedLoanDebtRepayments.map((e) => e.toJson()).toList(),
         'reimbursementAllocations':
             scopedReimbursementAllocations.map((e) => e.toJson()).toList(),
+        'people': people.map((person) => person.toJson()).toList(),
+        'personIdentifiers':
+            personIdentifiers.map((identifier) => identifier.toJson()).toList(),
+        'transactionPeople':
+            scopedTransactionPeople.map((link) => link.toJson()).toList(),
+        'transactionSplits':
+            scopedTransactionSplits.map((split) => split.toJson()).toList(),
       };
 
       return jsonEncode(exportData);
@@ -833,6 +883,8 @@ class DataExportImportService {
         }
       }
 
+      final personIdMap = await _importPeople(db, data);
+
       // Import loan/debt state after transactions/categories exist. Row IDs are
       // intentionally ignored; transactionReference is the stable identity.
       final loanDebtRaw = _asMapList(data['loanDebtEntries']);
@@ -848,6 +900,9 @@ class DataExportImportService {
           final entryData = entry.toDb()..remove('id');
           entryData['transactionReference'] = reference;
           entryData['personName'] = personName;
+          // Exported person IDs belong to the source database.
+          entryData['personId'] = personIdMap[entry.personId] ??
+              (await _personRepo.findOrCreateByName(personName)).id;
           batch.insert(
             'loan_debt_entries',
             entryData,
@@ -903,6 +958,15 @@ class DataExportImportService {
           } catch (_) {}
         }
       }
+
+      await _importTransactionPeople(db, data, personIdMap);
+      await _importTransactionSplits(
+        db,
+        data,
+        personIdMap: personIdMap,
+        categoryIdMap: categoryIdMap,
+        categoryIdsCanBeMapped: categoryIdsCanBeMapped,
+      );
 
       // Import explicit auto-category rules.
       final autoCategoryRulesRaw = _asMapList(data['autoCategoryRules']);
@@ -1145,6 +1209,22 @@ class DataExportImportService {
         'reimbursementAllocations',
         aliases: const ['reimbursement_allocations'],
       ),
+      'people': _readList(raw, 'people'),
+      'personIdentifiers': _readList(
+        raw,
+        'personIdentifiers',
+        aliases: const ['person_identifiers'],
+      ),
+      'transactionPeople': _readList(
+        raw,
+        'transactionPeople',
+        aliases: const ['transaction_people'],
+      ),
+      'transactionSplits': _readList(
+        raw,
+        'transactionSplits',
+        aliases: const ['transaction_splits'],
+      ),
       'smsPatterns': _readList(
         raw,
         'smsPatterns',
@@ -1241,6 +1321,7 @@ class DataExportImportService {
       failedParseCount: _asMapList(data['failedParses']).length,
       smsPatternCount: _asMapList(data['smsPatterns']).length,
       loanDebtEntryCount: _asMapList(data['loanDebtEntries']).length,
+      personCount: _asMapList(data['people']).length,
     );
   }
 
@@ -1330,6 +1411,31 @@ class DataExportImportService {
           )
           .toList(growable: false);
     }
+    bool hasImportedReference(Map<String, dynamic> row, String key) {
+      return transactionReferences.contains(row[key]?.toString().trim());
+    }
+
+    if (!options.includePeople) {
+      filtered['people'] = const <dynamic>[];
+      filtered['personIdentifiers'] = const <dynamic>[];
+      filtered['transactionPeople'] = const <dynamic>[];
+      // Category splits stay with their transactions.
+      filtered['transactionSplits'] = _asMapList(data['transactionSplits'])
+          .where((row) => hasImportedReference(row, 'parentReference'))
+          .where(
+            (row) => !transactionSplitKindFromStorage(row['kind']?.toString())
+                .isOwedByPerson,
+          )
+          .map((row) => <String, dynamic>{...row, 'personId': null})
+          .toList(growable: false);
+    } else if (options.bankIds != null) {
+      filtered['transactionPeople'] = _asMapList(data['transactionPeople'])
+          .where((row) => hasImportedReference(row, 'transactionReference'))
+          .toList(growable: false);
+      filtered['transactionSplits'] = _asMapList(data['transactionSplits'])
+          .where((row) => hasImportedReference(row, 'parentReference'))
+          .toList(growable: false);
+    }
     return filtered;
   }
 
@@ -1337,6 +1443,18 @@ class DataExportImportService {
     final explicit =
         _asInt(data['schemaVersion']) ?? _asInt(data['schema_version']);
     if (explicit != null) return explicit;
+
+    if (_hasAnySection(data, const [
+      'people',
+      'personIdentifiers',
+      'person_identifiers',
+      'transactionPeople',
+      'transaction_people',
+      'transactionSplits',
+      'transaction_splits',
+    ])) {
+      return 12;
+    }
 
     if (_hasAnySection(data, const [
       'transactionSourceSms',
@@ -1348,7 +1466,7 @@ class DataExportImportService {
     }
 
     if (_containsTransactionOwnership(data)) {
-      return currentSchemaVersion;
+      return 11;
     }
 
     if (_hasAnySection(data, const [
@@ -1491,6 +1609,149 @@ class DataExportImportService {
       keys.add(_accountKey(accountNumber, bank));
     }
     return keys;
+  }
+
+  /// Imports people and their identifiers. A person whose name already
+  /// exists locally is reused. Returns exported person IDs mapped to local
+  /// IDs.
+  Future<Map<int, int>> _importPeople(
+    Database db,
+    Map<String, dynamic> data,
+  ) async {
+    final personIdMap = <int, int>{};
+    final peopleRaw = _asMapList(data['people']);
+    for (final rawPerson in peopleRaw) {
+      final sourceId = _asInt(rawPerson['id']);
+      final person = Person.fromJson(rawPerson);
+      final name = normalizePersonName(person.name);
+      if (name.isEmpty) continue;
+      final existing = await _personRepo.findByName(name);
+      final localId = existing?.id ??
+          await db.insert(
+            'people',
+            person.copyWith(name: name).toDb()..remove('id'),
+          );
+      if (sourceId != null) personIdMap[sourceId] = localId;
+    }
+
+    final identifiersRaw = _asMapList(data['personIdentifiers']);
+    if (identifiersRaw.isNotEmpty) {
+      final batch = db.batch();
+      for (final rawIdentifier in identifiersRaw) {
+        final identifier = PersonIdentifier.fromDb({
+          ...rawIdentifier,
+          'id': null,
+        });
+        final personId = personIdMap[identifier.personId];
+        final canonical =
+            canonicalPersonIdentifier(identifier.kind, identifier.value);
+        if (personId == null || canonical == null) continue;
+        final row = identifier.toDb()
+          ..remove('id')
+          ..['personId'] = personId
+          ..['valueCanonical'] = canonical;
+        if (identifier.kind == PersonIdentifierKind.phone) {
+          row['bankId'] = null;
+        }
+        // An identifier already owned locally keeps its owner.
+        batch.insert(
+          'person_identifiers',
+          row,
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+      await batch.commit(noResult: true);
+    }
+    return personIdMap;
+  }
+
+  /// Links imported transactions to their people. Links already on this
+  /// device win, so a manual pick is never replaced.
+  Future<void> _importTransactionPeople(
+    Database db,
+    Map<String, dynamic> data,
+    Map<int, int> personIdMap,
+  ) async {
+    final linksRaw = _asMapList(data['transactionPeople']);
+    if (linksRaw.isEmpty) return;
+    final existingReferences = await _getExistingTransactionReferences(db);
+    final batch = db.batch();
+    for (final rawLink in linksRaw) {
+      final link = TransactionPersonLink.fromDb(rawLink);
+      final reference = link.transactionReference.trim();
+      final personId = personIdMap[link.personId];
+      if (personId == null || !existingReferences.contains(reference)) {
+        continue;
+      }
+      batch.insert(
+        'transaction_people',
+        TransactionPersonLink(
+          transactionReference: reference,
+          personId: personId,
+          source: link.source,
+          createdAt: link.createdAt,
+        ).toDb(),
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// Restores splits for imported transactions. A transaction that already
+  /// has splits here keeps them.
+  Future<void> _importTransactionSplits(
+    Database db,
+    Map<String, dynamic> data, {
+    required Map<int, int> personIdMap,
+    required Map<int, int> categoryIdMap,
+    required bool categoryIdsCanBeMapped,
+  }) async {
+    final splitsRaw = _asMapList(data['transactionSplits']);
+    if (splitsRaw.isEmpty) return;
+    final existingReferences = await _getExistingTransactionReferences(db);
+    final splitRows = await db.query(
+      'transaction_splits',
+      columns: const ['parentReference'],
+    );
+    final parentsWithSplits = splitRows
+        .map((row) => row['parentReference']?.toString().trim())
+        .whereType<String>()
+        .toSet();
+
+    final batch = db.batch();
+    for (final rawSplit in splitsRaw) {
+      final split = TransactionSplit.fromJson(rawSplit);
+      final reference = split.parentReference.trim();
+      if (!existingReferences.contains(reference) ||
+          parentsWithSplits.contains(reference) ||
+          !split.amount.isFinite ||
+          split.amount <= 0) {
+        continue;
+      }
+      final personId =
+          split.personId == null ? null : personIdMap[split.personId];
+      if (split.isOwedByPerson && personId == null) continue;
+      final sourceCategoryId = split.categoryId;
+      final categoryId = sourceCategoryId == null
+          ? null
+          : categoryIdMap[sourceCategoryId] ??
+              (categoryIdsCanBeMapped ? null : sourceCategoryId);
+      batch.insert(
+        'transaction_splits',
+        TransactionSplit(
+          parentReference: reference,
+          amount: split.amount,
+          categoryId: categoryId,
+          personId: personId,
+          kind: split.kind,
+          status: split.status,
+          note: split.note,
+          createdAt: split.createdAt,
+          updatedAt: split.updatedAt,
+        ).toDb(),
+      );
+    }
+    await batch.commit(noResult: true);
   }
 
   Future<Set<String>> _getExistingTransactionReferences(Database db) async {
