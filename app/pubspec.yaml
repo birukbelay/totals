@@ -72,6 +72,8 @@ dependencies:
   uuid: ^4.5.1
   flutter_dotenv: ^6.0.0
   better_player_plus: 1.0.8
+  totals_google_auth:
+    path: packages/totals_google_auth
   # background_sms: ^0.0.4
   # background_sms:
   #   git:

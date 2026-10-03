@@ -1,0 +1,21 @@
+name: totals_google_auth
+description: >-
+  Google authorization for Totals' Google Drive backup, using the Android
+  Identity AuthorizationClient. Only grants the scopes Totals asks for.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.2.6 <4.0.0"
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: detached.totals.googleauth
+        pluginClass: TotalsGoogleAuthPlugin

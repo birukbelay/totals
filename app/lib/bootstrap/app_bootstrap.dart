@@ -16,6 +16,8 @@ import 'package:totals/services/totals_engine_client.dart';
 import 'package:totals/services/widget_launch_intent_service.dart';
 import 'package:totals/services/widget_refresh_scheduler.dart';
 import 'package:totals/services/widget_service.dart';
+import 'package:totals/services/google_drive_backup/drive_backup_scheduler.dart';
+import 'package:totals/services/google_drive_backup/drive_backup_settings_service.dart';
 import 'package:totals/services/telegram_backup/telegram_backup_scheduler.dart';
 import 'package:totals/services/telegram_backup/telegram_backup_settings_service.dart';
 import 'package:totals/theme/app_theme_mode_preference.dart';
@@ -300,6 +302,11 @@ class AppBootstrapper {
       onPhaseChanged: onPhaseChanged,
       task: TelegramBackupSettingsService.instance.ensureLoaded,
     );
+    await _runNonFatal(
+      phase: BootstrapPhase.initializingServices,
+      onPhaseChanged: onPhaseChanged,
+      task: DriveBackupSettingsService.instance.ensureLoaded,
+    );
 
     if (_supportsBackgroundScheduling) {
       final workmanagerReady = await _runNonFatal(
@@ -333,6 +340,11 @@ class AppBootstrapper {
           phase: BootstrapPhase.schedulingBackgroundWork,
           onPhaseChanged: onPhaseChanged,
           task: TelegramBackupScheduler.sync,
+        );
+        await _runNonFatal(
+          phase: BootstrapPhase.schedulingBackgroundWork,
+          onPhaseChanged: onPhaseChanged,
+          task: DriveBackupScheduler.sync,
         );
       }
     }

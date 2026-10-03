@@ -13,6 +13,8 @@ import 'package:totals/services/widget_service.dart';
 import 'package:totals/services/widget_data_provider.dart';
 import 'package:totals/services/widget_refresh_settings_service.dart';
 import 'package:totals/services/widget_refresh_state_service.dart';
+import 'package:totals/services/google_drive_backup/drive_backup_scheduler.dart';
+import 'package:totals/services/google_drive_backup/drive_backup_service.dart';
 import 'package:totals/services/telegram_backup/telegram_backup_scheduler.dart';
 import 'package:totals/services/telegram_backup/telegram_backup_service.dart';
 
@@ -82,6 +84,28 @@ void callbackDispatcher() {
         } catch (error) {
           if (kDebugMode) {
             debugPrint('debug: Telegram backup worker failed: $error');
+          }
+          return false;
+        }
+      }
+
+      if (task == googleDriveBackupCheckTask) {
+        try {
+          final skipSmsCatchup = inputData?['skipSmsCatchup'] == true;
+          if (!skipSmsCatchup) {
+            await _syncMissedBankSmsBestEffort(SmsService());
+          }
+          final result = await DriveBackupService.instance.backupIfDue();
+          if (kDebugMode) {
+            final trigger = inputData?['trigger'] as String? ?? 'periodic';
+            debugPrint(
+              'debug: Google Drive backup $trigger check: ${result.name}',
+            );
+          }
+          return result != DriveBackupAttemptResult.retry;
+        } catch (error) {
+          if (kDebugMode) {
+            debugPrint('debug: Google Drive backup worker failed: $error');
           }
           return false;
         }
@@ -160,6 +184,7 @@ void callbackDispatcher() {
 
       if (summaryDelivered) {
         await TelegramBackupScheduler.enqueueAfterSummary();
+        await DriveBackupScheduler.enqueueAfterSummary();
       }
 
       return true;

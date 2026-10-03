@@ -9,6 +9,7 @@ import 'package:totals/services/notification_service.dart';
 import 'package:totals/services/notification_scheduler.dart';
 import 'package:totals/services/notification_settings_service.dart';
 import 'package:totals/services/shared_expense_push_notification_service.dart';
+import 'package:totals/services/google_drive_backup/drive_backup_scheduler.dart';
 import 'package:totals/services/telegram_backup/telegram_backup_scheduler.dart';
 import 'package:totals/services/widget_data_provider.dart';
 import 'package:totals/services/widget_refresh_scheduler.dart';
@@ -158,6 +159,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
     await NotificationSettingsService.instance.setDailySummaryTime(picked);
     await NotificationScheduler.syncSpendingSummarySchedule();
     await TelegramBackupScheduler.sync();
+    await DriveBackupScheduler.sync();
     await _load();
   }
 

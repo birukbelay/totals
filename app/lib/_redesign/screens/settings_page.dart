@@ -9,6 +9,7 @@ import 'package:totals/_redesign/screens/feature_discovery_page.dart';
 import 'package:totals/_redesign/theme/app_colors.dart';
 import 'package:totals/_redesign/screens/tools_page.dart';
 import 'package:totals/_redesign/screens/advanced_settings_page.dart';
+import 'package:totals/_redesign/screens/google_drive_backup_page.dart';
 import 'package:totals/_redesign/screens/telegram_backup_page.dart';
 import 'package:totals/providers/theme_provider.dart';
 import 'package:totals/providers/transaction_provider.dart';
@@ -22,12 +23,15 @@ import 'package:totals/services/app_update_service.dart';
 import 'package:totals/services/data_export_import_service.dart';
 import 'package:totals/services/sms_config_service.dart';
 import 'package:totals/services/advanced_settings_service.dart';
+import 'package:totals/services/google_drive_backup/drive_backup_models.dart';
+import 'package:totals/services/google_drive_backup/drive_backup_settings_service.dart';
 import 'package:totals/services/telegram_backup/telegram_backup_models.dart';
 import 'package:totals/services/telegram_backup/telegram_backup_settings_service.dart';
 import 'package:totals/_redesign/theme/app_icons.dart';
 import 'package:totals/l10n/app_localizations.dart';
 import 'package:totals/theme/app_font_option.dart';
 import 'package:totals/theme/app_calendar_option.dart';
+import 'package:totals_google_auth/totals_google_auth.dart';
 import 'package:totals/theme/app_language_option.dart';
 import 'package:totals/widgets/data_export_options_sheet.dart';
 import 'package:totals/widgets/data_import_options_sheet.dart';
@@ -80,6 +84,7 @@ class _RedesignSettingsPageState extends State<RedesignSettingsPage> {
     _telegramBackupSettingsLoad = Future.wait([
       AdvancedSettingsService.instance.ensureLoaded(),
       TelegramBackupSettingsService.instance.ensureLoaded(),
+      DriveBackupSettingsService.instance.ensureLoaded(),
     ]);
   }
 
@@ -1073,8 +1078,7 @@ class _RedesignSettingsPageState extends State<RedesignSettingsPage> {
         final jsonData = await file.readAsString();
 
         if (!mounted) return;
-        final summary =
-            DataExportImportService.inspectImportPayload(jsonData);
+        final summary = DataExportImportService.inspectImportPayload(jsonData);
         final importOptions = await showDataImportOptionsSheet(
           context: context,
           summary: summary,
@@ -1497,6 +1501,39 @@ class _RedesignSettingsPageState extends State<RedesignSettingsPage> {
                   );
                 },
               ),
+
+              if (TotalsGoogleAuth.isSupported)
+                FutureBuilder<void>(
+                  future: _telegramBackupSettingsLoad,
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState != ConnectionState.done) {
+                      return const SizedBox.shrink();
+                    }
+                    return ValueListenableBuilder<DriveBackupConfig?>(
+                      valueListenable:
+                          DriveBackupSettingsService.instance.config,
+                      builder: (context, config, _) {
+                        return _SettingTile(
+                          icon: Icons.add_to_drive_rounded,
+                          iconColor: AppColors.primaryLight,
+                          title: context.l10nText('Google Drive Backup'),
+                          subtitle: config == null
+                              ? context.l10nText(
+                                  'Back up to your own Google Drive',
+                                )
+                              : '${context.l10nText('Connected to')} '
+                                  '${config.accountEmail ?? 'Google Drive'}',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const GoogleDriveBackupPage(),
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
 
               _SettingTile(
                 icon: AppIcons.upload_rounded,
