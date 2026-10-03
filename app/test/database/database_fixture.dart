@@ -274,6 +274,13 @@ class DatabaseFixture {
   }
 
   static Future<void> replaceWithV25LoanShape(Database db) async {
+    // People (v34) did not exist yet; its trigger references
+    // loan_debt_entries.personId.
+    await db.execute('DROP TRIGGER IF EXISTS trg_people_delete');
+    await db.execute('DROP TRIGGER IF EXISTS trg_transaction_people_tx_delete');
+    await db.execute('DROP TABLE IF EXISTS transaction_people');
+    await db.execute('DROP TABLE IF EXISTS person_identifiers');
+    await db.execute('DROP TABLE IF EXISTS people');
     await db.execute('DROP TABLE loan_debt_repayments');
     await db.execute('DROP TABLE loan_debt_entries');
     await db.execute('''

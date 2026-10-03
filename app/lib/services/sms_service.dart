@@ -34,6 +34,7 @@ import 'package:totals/utils/sms_transaction_source.dart';
 import 'package:totals/utils/sms_message_classifier.dart';
 import 'package:totals/utils/transaction_duplicate_detector.dart';
 import 'package:totals/services/account_ownership_service.dart';
+import 'package:totals/services/person_matcher_service.dart';
 import 'package:totals/utils/account_identity.dart';
 
 enum ParseStatus {
@@ -1472,6 +1473,11 @@ class SmsService {
     );
 
     print("debug: New transaction saved: ${savedTx.reference}");
+
+    await PersonMatcherService.instance.matchAndLink(
+      savedTx,
+      messageBody: messageBody,
+    );
 
     if (_isAtmWithdrawal(details, messageBody)) {
       try {

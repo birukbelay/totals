@@ -7,12 +7,14 @@ import 'package:totals/models/auto_categorization.dart';
 import 'package:totals/models/bank.dart';
 import 'package:totals/models/category.dart';
 import 'package:totals/models/loan_debt_entry.dart';
+import 'package:totals/models/person.dart';
 import 'package:totals/models/reimbursement_allocation.dart';
 import 'package:totals/models/transaction.dart';
 import 'package:totals/models/summary_models.dart';
 import 'package:totals/repositories/account_repository.dart';
 import 'package:totals/repositories/category_repository.dart';
 import 'package:totals/repositories/loan_debt_repository.dart';
+import 'package:totals/repositories/person_repository.dart';
 import 'package:totals/repositories/reimbursement_repository.dart';
 import 'package:totals/repositories/shared_expense_repository.dart';
 import 'package:totals/repositories/transaction_repository.dart';
@@ -23,6 +25,7 @@ import 'package:totals/services/auto_categorization_service.dart';
 import 'package:totals/services/notification_service.dart';
 import 'package:totals/services/notification_settings_service.dart';
 import 'package:totals/services/owned_account_transfer_service.dart';
+import 'package:totals/services/person_analytics_service.dart';
 import 'package:totals/services/widget_service.dart';
 import 'package:totals/utils/account_balance_resolver.dart';
 import 'package:totals/utils/account_reconciliation.dart';
@@ -175,6 +178,7 @@ class TransactionProvider with ChangeNotifier {
   final BankConfigService _bankConfigService = BankConfigService();
   final SharedExpenseRepository _sharedExpenseRepo = SharedExpenseRepository();
   final LoanDebtRepository _loanDebtRepo = LoanDebtRepository();
+  final PersonRepository _personRepo = PersonRepository();
   final ReimbursementRepository _reimbursementRepo = ReimbursementRepository();
   final BudgetAlertService _budgetAlertService = BudgetAlertService();
   final AutoCategorizationService _autoCategorizationService =
@@ -216,6 +220,12 @@ class TransactionProvider with ChangeNotifier {
   Set<String> _sharedExpenseLinkedRefs = {};
   final Set<String> _sharedExpenseSharingRefs = {};
   Map<String, String> _loanDebtPersonByReference = {};
+  List<Person> _people = const [];
+  Map<int, Person> _personById = const {};
+  Map<String, TransactionPersonLink> _personLinkByReference = const {};
+  List<LoanDebtEntry> _loanDebtEntries = const [];
+  List<LoanDebtRepayment> _loanDebtRepayments = const [];
+  PeopleAnalytics? _peopleAnalytics;
   List<ReimbursementAllocation> _reimbursementAllocations = const [];
   Map<String, List<ReimbursementAllocation>> _reimbursementsByCreditReference =
       const {};
@@ -422,6 +432,91 @@ class TransactionProvider with ChangeNotifier {
     final extraCount = categories.length - 1;
     if (extraCount <= 0) return primaryLabel;
     return '$primaryLabel +$extraCount';
+  }
+
+  List<Person> get people => _people;
+
+  Person? personById(int? id) => id == null ? null : _personById[id];
+
+  TransactionPersonLink? personLinkForTransaction(Transaction transaction) {
+    return _personLinkByReference[transaction.reference.trim()];
+  }
+
+  Person? personForTransaction(Transaction transaction) {
+    return personById(personLinkForTransaction(transaction)?.personId);
+  }
+
+  List<Transaction> transactionsForPerson(int personId) {
+    return _allTransactions
+        .where(
+          (transaction) =>
+              _personLinkByReference[transaction.reference.trim()]?.personId ==
+              personId,
+        )
+        .toList(growable: false);
+  }
+
+  List<LoanDebtEntry> loanDebtEntriesForPerson(int personId) {
+    return _loanDebtEntries
+        .where((entry) => entry.personId == personId)
+        .toList(growable: false);
+  }
+
+  /// Lifetime per-person and per-type analytics, rebuilt lazily after each
+  /// data load.
+  PeopleAnalytics get peopleAnalytics {
+    return _peopleAnalytics ??= const PersonAnalyticsService().build(
+      people: _people,
+      transactions: _allTransactions,
+      links: _personLinkByReference,
+      loanEntries: _loanDebtEntries,
+      repayments: _loanDebtRepayments,
+      expenseAmount: netExpenseAmountForTransaction,
+      incomeAmount: incomeAmountForTransaction,
+    );
+  }
+
+  Future<void> refreshPeople() async {
+    await _reloadPeopleState();
+    _dataVersion += 1;
+    notifyListeners();
+  }
+
+  Future<void> setTransactionPerson(
+    Transaction transaction,
+    int? personId,
+  ) async {
+    if (personId == null) {
+      await _personRepo.unlinkTransaction(transaction.reference);
+    } else {
+      await _personRepo.linkTransaction(
+        transactionReference: transaction.reference,
+        personId: personId,
+      );
+    }
+    await refreshPeople();
+  }
+
+  Future<void> _reloadPeopleState() async {
+    _peopleAnalytics = null;
+    try {
+      final people = await _personRepo.getPeople();
+      _people = List<Person>.unmodifiable(people);
+      _personById = Map<int, Person>.unmodifiable({
+        for (final person in people)
+          if (person.id != null) person.id!: person,
+      });
+      _personLinkByReference = Map<String, TransactionPersonLink>.unmodifiable(
+        await _personRepo.getTransactionLinks(),
+      );
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('debug: Could not load people: $error');
+      }
+      _people = const [];
+      _personById = const {};
+      _personLinkByReference = const {};
+    }
   }
 
   String? loanDebtPersonNameForTransaction(Transaction transaction) {
@@ -757,6 +852,7 @@ class TransactionProvider with ChangeNotifier {
         _sharedExpenseLinkedRefs = {};
       }
       await _refreshLoanDebtPeople();
+      await _reloadPeopleState();
       debugPrint("debug: Transactions: ${_allTransactions.length}");
 
       final banks = await _bankConfigService.getBanks();
@@ -790,6 +886,9 @@ class TransactionProvider with ChangeNotifier {
     try {
       final entries = await _loanDebtRepo.getEntries();
       final repayments = await _loanDebtRepo.getRepayments();
+      _loanDebtEntries = List<LoanDebtEntry>.unmodifiable(entries);
+      _loanDebtRepayments = List<LoanDebtRepayment>.unmodifiable(repayments);
+      _peopleAnalytics = null;
       _loanDebtPersonByReference = _buildLoanDebtPersonLabels(
         entries: entries,
         repayments: repayments,
@@ -799,10 +898,14 @@ class TransactionProvider with ChangeNotifier {
         debugPrint('debug: Could not load loan/debt person labels: $error');
       }
       _loanDebtPersonByReference = {};
+      _loanDebtEntries = const [];
+      _loanDebtRepayments = const [];
+      _peopleAnalytics = null;
     }
   }
 
   Future<void> _reloadReimbursementState() async {
+    _peopleAnalytics = null;
     try {
       final allocations = await _reimbursementRepo.getAllocations();
       final byCredit = <String, List<ReimbursementAllocation>>{};

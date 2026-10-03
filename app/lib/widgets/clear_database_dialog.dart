@@ -110,6 +110,7 @@ class _ClearDataOptionsSheetState extends State<ClearDataOptionsSheet> {
   bool _clearBudgets = false;
   bool _clearAutoCategorization = false;
   bool _clearLoansAndDebts = false;
+  bool _clearPeople = false;
   bool _clearFailedParses = false;
 
   bool get _allBanksSelected =>
@@ -126,6 +127,7 @@ class _ClearDataOptionsSheetState extends State<ClearDataOptionsSheet> {
       budgets: _clearBudgets,
       autoCategorization: _clearAutoCategorization,
       loansAndDebts: _clearLoansAndDebts,
+      people: _clearPeople,
       failedParses: _clearFailedParses,
     );
   }
@@ -309,6 +311,17 @@ class _ClearDataOptionsSheetState extends State<ClearDataOptionsSheet> {
                   value: _clearLoansAndDebts,
                   onChanged: (value) =>
                       setState(() => _clearLoansAndDebts = value),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(context.l10nText('People')),
+                  subtitle: Text(
+                    context.l10nText(
+                      'People, their accounts and transaction assignments',
+                    ),
+                  ),
+                  value: _clearPeople,
+                  onChanged: (value) => setState(() => _clearPeople = value),
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,

@@ -77,6 +77,7 @@ class LoanDebtEntry {
   final int? id;
   final String transactionReference;
   final String personName;
+  final int? personId;
   final LoanDebtDirection direction;
   final LoanDebtStatus status;
   final double? principalAmount;
@@ -90,6 +91,7 @@ class LoanDebtEntry {
     this.id,
     required this.transactionReference,
     required this.personName,
+    this.personId,
     required this.direction,
     this.status = LoanDebtStatus.active,
     this.principalAmount,
@@ -108,6 +110,7 @@ class LoanDebtEntry {
       id: row['id'] as int?,
       transactionReference: (row['transactionReference'] as String?) ?? '',
       personName: (row['personName'] as String?) ?? '',
+      personId: (row['personId'] as num?)?.toInt(),
       direction: loanDebtDirectionFromStorage(
         row['direction'] as String?,
       ),
@@ -126,6 +129,7 @@ class LoanDebtEntry {
       if (id != null) 'id': id,
       'transactionReference': transactionReference,
       'personName': personName,
+      'personId': personId,
       'direction': direction.storageValue,
       'status': status.storageValue,
       'principalAmount': principalAmount,
@@ -155,6 +159,7 @@ class LoanDebtEntry {
       id: json['id'] is int ? json['id'] as int : null,
       transactionReference: (json['transactionReference'] as String?) ?? '',
       personName: (json['personName'] as String?) ?? '',
+      personId: json['personId'] is int ? json['personId'] as int : null,
       direction: loanDebtDirectionFromStorage(json['direction'] as String?),
       status: loanDebtStatusFromStorage(json['status'] as String?),
       principalAmount: toNullableDouble(json['principalAmount']),

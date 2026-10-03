@@ -49,7 +49,7 @@ class DatabaseHelper {
     final db = await _databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 33,
+        version: 34,
         onCreate: _createDB,
         onUpgrade: _upgradeDB,
       ),
@@ -59,7 +59,7 @@ class DatabaseHelper {
     // the post-open path read-only and fail with a useful invariant name if a
     // database was produced by an unknown or interrupted build.
     try {
-      await _validateV33Schema(db);
+      await _validateV34Schema(db);
     } catch (_) {
       await db.close();
       rethrow;
@@ -339,6 +339,7 @@ class DatabaseHelper {
     await _ensureLoanDebtSchema(db);
     await _ensureReimbursementSchema(db);
     await _ensureTransactionSourceSmsSchema(db);
+    await _ensurePeopleSchema(db);
 
     await _seedBuiltInCategories(db);
     await _ensureSyncSchema(db);
@@ -366,6 +367,9 @@ class DatabaseHelper {
       if (newVersion >= 33) {
         await _migrateV32ToV33(db);
       }
+      if (newVersion >= 34) {
+        await _migrateV33ToV34(db);
+      }
       return;
     }
 
@@ -383,6 +387,9 @@ class DatabaseHelper {
       if (newVersion >= 33) {
         await _migrateV32ToV33(db);
       }
+      if (newVersion >= 34) {
+        await _migrateV33ToV34(db);
+      }
       return;
     }
 
@@ -397,6 +404,9 @@ class DatabaseHelper {
       if (newVersion >= 33) {
         await _migrateV32ToV33(db);
       }
+      if (newVersion >= 34) {
+        await _migrateV33ToV34(db);
+      }
       return;
     }
 
@@ -408,6 +418,9 @@ class DatabaseHelper {
       if (newVersion >= 33) {
         await _migrateV32ToV33(db);
       }
+      if (newVersion >= 34) {
+        await _migrateV33ToV34(db);
+      }
       return;
     }
 
@@ -416,11 +429,22 @@ class DatabaseHelper {
       if (newVersion >= 33) {
         await _migrateV32ToV33(db);
       }
+      if (newVersion >= 34) {
+        await _migrateV33ToV34(db);
+      }
       return;
     }
 
     if (oldVersion < 33) {
       await _migrateV32ToV33(db);
+      if (newVersion >= 34) {
+        await _migrateV33ToV34(db);
+      }
+      return;
+    }
+
+    if (oldVersion < 34) {
+      await _migrateV33ToV34(db);
       return;
     }
 
@@ -1044,6 +1068,11 @@ class DatabaseHelper {
       () => _ensureTransactionSourceSmsSchema(db),
     );
     await _runV28Stage('v33 final validation', () => _validateV33Schema(db));
+  }
+
+  Future<void> _migrateV33ToV34(Database db) async {
+    await _runV28Stage('v34 people', () => _ensurePeopleSchema(db));
+    await _runV28Stage('v34 final validation', () => _validateV34Schema(db));
   }
 
   Future<void> _runV28Stage(
@@ -2035,6 +2064,174 @@ class DatabaseHelper {
     ''');
     if (triggers.isEmpty) {
       throw StateError('v33 transaction source SMS delete trigger is missing');
+    }
+  }
+
+  Future<void> _validateV34Schema(Database db) async {
+    await _validateV33Schema(db);
+    const requiredTables = {
+      'people': {
+        'id',
+        'name',
+        'type',
+        'note',
+        'telegramHandle',
+        'createdAt',
+        'updatedAt',
+      },
+      'person_identifiers': {
+        'id',
+        'personId',
+        'kind',
+        'bankId',
+        'value',
+        'valueCanonical',
+        'createdAt',
+      },
+      'transaction_people': {
+        'transactionReference',
+        'personId',
+        'source',
+        'createdAt',
+      },
+    };
+    for (final entry in requiredTables.entries) {
+      if (!await _v28TableExists(db, entry.key)) {
+        throw StateError('v34 invariant missing table ${entry.key}');
+      }
+      final missing = entry.value.difference(await _v28Columns(db, entry.key));
+      if (missing.isNotEmpty) {
+        throw StateError(
+          'v34 invariant ${entry.key} missing ${missing.join(', ')}',
+        );
+      }
+    }
+    if (!(await _v28Columns(db, 'loan_debt_entries')).contains('personId')) {
+      throw StateError('v34 invariant loan_debt_entries.personId missing');
+    }
+    final triggers = await db.rawQuery('''
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'trigger'
+        AND name IN (
+          'trg_transaction_people_tx_delete',
+          'trg_people_delete'
+        )
+    ''');
+    if (triggers.length != 2) {
+      throw StateError('v34 people triggers are missing');
+    }
+  }
+
+  /// People (v34): counterparties the user lends to, splits bills with, or
+  /// pays. Loan/debt rows keep their free-text personName as a display
+  /// fallback; personId links them to the durable person record.
+  Future<void> _ensurePeopleSchema(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS people (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'friend',
+        note TEXT,
+        telegramHandle TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_people_name ON people(name COLLATE NOCASE)',
+    );
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS person_identifiers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        personId INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        bankId INTEGER,
+        value TEXT NOT NULL,
+        valueCanonical TEXT NOT NULL,
+        createdAt TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_person_identifiers_unique '
+      'ON person_identifiers(kind, IFNULL(bankId, -1), valueCanonical)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_person_identifiers_person '
+      'ON person_identifiers(personId)',
+    );
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS transaction_people (
+        transactionReference TEXT PRIMARY KEY NOT NULL,
+        personId INTEGER NOT NULL,
+        source TEXT NOT NULL DEFAULT 'manual',
+        createdAt TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_transaction_people_person '
+      'ON transaction_people(personId)',
+    );
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS trg_transaction_people_tx_delete
+      AFTER DELETE ON transactions
+      BEGIN
+        DELETE FROM transaction_people
+        WHERE transactionReference = OLD.reference;
+      END
+    ''');
+    await _v28EnsureColumns(db, 'loan_debt_entries', {
+      'personId': 'ALTER TABLE loan_debt_entries ADD COLUMN personId INTEGER',
+    });
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_loan_debt_entries_personId '
+      'ON loan_debt_entries(personId)',
+    );
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS trg_people_delete
+      AFTER DELETE ON people
+      BEGIN
+        DELETE FROM person_identifiers WHERE personId = OLD.id;
+        DELETE FROM transaction_people WHERE personId = OLD.id;
+        UPDATE loan_debt_entries SET personId = NULL WHERE personId = OLD.id;
+      END
+    ''');
+
+    await _backfillPeopleFromLoanDebtEntries(db);
+  }
+
+  /// Creates one person per distinct loan/debt name and links the entries.
+  /// Safe to repeat: only rows without a personId are considered and names
+  /// are matched case-insensitively against existing people first.
+  Future<void> _backfillPeopleFromLoanDebtEntries(Database db) async {
+    final rows = await db.rawQuery('''
+      SELECT TRIM(personName) AS name, MIN(createdAt) AS firstSeen
+      FROM loan_debt_entries
+      WHERE personId IS NULL AND TRIM(personName) <> ''
+      GROUP BY LOWER(TRIM(personName))
+    ''');
+    if (rows.isEmpty) return;
+    final nowIso = DateTime.now().toIso8601String();
+    for (final row in rows) {
+      final name = (row['name'] as String).replaceAll(RegExp(r'\s+'), ' ');
+      final existing = await db.rawQuery(
+        'SELECT id FROM people WHERE LOWER(TRIM(name)) = LOWER(?) '
+        'ORDER BY id LIMIT 1',
+        [name],
+      );
+      final personId = existing.isNotEmpty
+          ? existing.first['id'] as int
+          : await db.insert('people', {
+              'name': name,
+              'type': 'friend',
+              'createdAt': (row['firstSeen'] as String?) ?? nowIso,
+              'updatedAt': nowIso,
+            });
+      await db.rawUpdate(
+        'UPDATE loan_debt_entries SET personId = ? '
+        'WHERE personId IS NULL AND LOWER(TRIM(personName)) = LOWER(TRIM(?))',
+        [personId, row['name']],
+      );
     }
   }
 

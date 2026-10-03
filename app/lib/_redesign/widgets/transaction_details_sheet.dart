@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:totals/_redesign/theme/app_colors.dart';
 import 'package:totals/_redesign/theme/app_icons.dart';
+import 'package:totals/_redesign/widgets/person_picker_sheet.dart';
 import 'package:totals/_redesign/widgets/reimbursement_link_sheet.dart';
 import 'package:totals/models/category.dart';
 import 'package:totals/models/summary_models.dart';
@@ -1689,6 +1690,8 @@ class _TransactionDetailsSheetState extends State<_TransactionDetailsSheet> {
                       if (_categoryExpanded && !isLockedSelfTransfer)
                         _buildCategoryPicker(),
 
+                      _buildPersonRow(),
+
                       _buildNoteSection(),
 
                       ReimbursementRelationshipsSection(
@@ -1761,6 +1764,34 @@ class _TransactionDetailsSheetState extends State<_TransactionDetailsSheet> {
           ),
         ),
       ),
+    );
+  }
+
+  Future<void> _assignPerson() async {
+    final current = _provider.personForTransaction(_tx);
+    final result = await showPersonPickerSheet(
+      context: context,
+      people: _provider.people,
+      selectedPersonId: current?.id,
+      suggestedName: _storedCounterpartyValue,
+    );
+    if (result == null) return;
+    final personId = result.cleared ? null : result.person?.id;
+    if (personId == current?.id) return;
+    await _provider.setTransactionPerson(_tx, personId);
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Widget _buildPersonRow() {
+    final person = _provider.personForTransaction(_tx);
+    return _DetailRow(
+      label: 'Person',
+      value: person?.name ?? context.l10nText('Tap to assign'),
+      onTap: () {
+        unawaited(_assignPerson());
+      },
+      trailingIcon: AppIcons.person,
     );
   }
 

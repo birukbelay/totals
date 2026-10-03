@@ -2,6 +2,7 @@ import 'package:totals/repositories/account_repository.dart';
 import 'package:totals/repositories/budget_repository.dart';
 import 'package:totals/repositories/failed_parse_repository.dart';
 import 'package:totals/repositories/loan_debt_repository.dart';
+import 'package:totals/repositories/person_repository.dart';
 import 'package:totals/repositories/transaction_repository.dart';
 import 'package:totals/repositories/user_account_repository.dart';
 import 'package:totals/services/auto_categorization_service.dart';
@@ -13,6 +14,7 @@ class ClearDataSelection {
   final bool quickAccessAccounts;
   final bool autoCategorization;
   final bool loansAndDebts;
+  final bool people;
   final bool failedParses;
 
   const ClearDataSelection({
@@ -22,6 +24,7 @@ class ClearDataSelection {
     this.quickAccessAccounts = false,
     this.autoCategorization = false,
     this.loansAndDebts = false,
+    this.people = false,
     this.failedParses = false,
   });
 
@@ -31,6 +34,7 @@ class ClearDataSelection {
       quickAccessAccounts ||
       autoCategorization ||
       loansAndDebts ||
+      people ||
       failedParses;
 }
 
@@ -59,6 +63,9 @@ class DataClearService {
     }
     if (selection.loansAndDebts) {
       await LoanDebtRepository().clearAll();
+    }
+    if (selection.people) {
+      await PersonRepository().clearAll();
     }
     if (selection.failedParses) {
       await FailedParseRepository().clear();

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:totals/database/database_helper.dart';
 import 'package:totals/models/loan_debt_entry.dart';
+import 'package:totals/repositories/person_repository.dart';
 import 'package:totals/services/notification_service.dart';
 
 class LoanDebtRepaymentAllocation {
@@ -31,6 +32,8 @@ class LoanDebtReturnReminderCandidate {
 }
 
 class LoanDebtRepository {
+  final PersonRepository _personRepository = PersonRepository();
+
   Future<List<LoanDebtEntry>> getEntries() async {
     final db = await DatabaseHelper.instance.database;
     final rows = await db.query(
@@ -97,18 +100,29 @@ class LoanDebtRepository {
     return LoanDebtEntry.fromDb(rows.first);
   }
 
+  /// Names for the loan/debt person picker: people with recent loans first,
+  /// followed by every other saved person.
   Future<List<String>> getKnownPeople() async {
     final db = await DatabaseHelper.instance.database;
     final rows = await db.rawQuery('''
-      SELECT personName, MAX(updatedAt) AS lastUpdated
-      FROM loan_debt_entries
-      WHERE TRIM(personName) <> ''
-      GROUP BY LOWER(TRIM(personName))
-      ORDER BY lastUpdated DESC, personName COLLATE NOCASE ASC
+      SELECT name, MAX(lastUpdated) AS lastUpdated
+      FROM (
+        SELECT COALESCE(p.name, e.personName) AS name,
+               e.updatedAt AS lastUpdated
+        FROM loan_debt_entries e
+        LEFT JOIN people p ON p.id = e.personId
+        WHERE TRIM(COALESCE(p.name, e.personName)) <> ''
+        UNION ALL
+        SELECT name, '' AS lastUpdated
+        FROM people
+        WHERE TRIM(name) <> ''
+      )
+      GROUP BY LOWER(TRIM(name))
+      ORDER BY lastUpdated DESC, name COLLATE NOCASE ASC
     ''');
 
     return rows
-        .map((row) => (row['personName'] as String?)?.trim())
+        .map((row) => (row['name'] as String?)?.trim())
         .whereType<String>()
         .where((name) => name.isNotEmpty)
         .toList(growable: false);
@@ -127,6 +141,7 @@ class LoanDebtRepository {
     if (normalizedReference.isEmpty || normalizedName.isEmpty) return;
 
     final db = await DatabaseHelper.instance.database;
+    final person = await _personRepository.findOrCreateByName(normalizedName);
     final existingRows = await db.query(
       'loan_debt_entries',
       where: 'transactionReference = ?',
@@ -150,7 +165,8 @@ class LoanDebtRepository {
         : LoanDebtEntrySource.transaction;
     final data = {
       'transactionReference': normalizedReference,
-      'personName': normalizedName,
+      'personName': person.name,
+      'personId': person.id,
       'direction': direction.storageValue,
       'status': LoanDebtStatus.active.storageValue,
       'principalAmount': normalizedPrincipal,
@@ -171,6 +187,13 @@ class LoanDebtRepository {
         whereArgs: [normalizedReference],
       );
     }
+
+    // A loan names the counterparty, so the transaction belongs to them too.
+    await _personRepository.linkTransaction(
+      transactionReference: normalizedReference,
+      personId: person.id!,
+      executor: db,
+    );
 
     await _syncReturnReminderForStoredEntry(db, normalizedReference);
   }
@@ -320,9 +343,14 @@ class LoanDebtRepository {
         final existing = existingRows.isEmpty
             ? null
             : LoanDebtEntry.fromDb(existingRows.first);
+        final person = await _personRepository.findOrCreateByName(
+          normalizedSurplusName,
+          executor: txn,
+        );
         final data = {
           'transactionReference': normalizedRepaymentReference,
-          'personName': normalizedSurplusName,
+          'personName': person.name,
+          'personId': person.id,
           'direction': surplusDirection.storageValue,
           'status': LoanDebtStatus.active.storageValue,
           'principalAmount': normalizedSurplusAmount,
@@ -414,11 +442,26 @@ class LoanDebtRepository {
     if (normalizedReference.isEmpty) return;
 
     final db = await DatabaseHelper.instance.database;
-    await db.delete(
-      'loan_debt_entries',
-      where: 'transactionReference = ?',
-      whereArgs: [normalizedReference],
-    );
+    await db.transaction((txn) async {
+      // Drop the person link the loan created, but keep links the user or
+      // the matcher made to a different person.
+      await txn.rawDelete(
+        '''
+        DELETE FROM transaction_people
+        WHERE transactionReference = ?
+          AND personId IN (
+            SELECT personId FROM loan_debt_entries
+            WHERE transactionReference = ? AND personId IS NOT NULL
+          )
+        ''',
+        [normalizedReference, normalizedReference],
+      );
+      await txn.delete(
+        'loan_debt_entries',
+        where: 'transactionReference = ?',
+        whereArgs: [normalizedReference],
+      );
+    });
     await _cancelReturnReminder(normalizedReference);
   }
 

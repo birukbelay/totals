@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:totals/_redesign/screens/people_page.dart';
 import 'package:totals/_redesign/theme/app_colors.dart';
 import 'package:totals/screens/accounts_page.dart';
 import 'package:totals/screens/failed_parses_page.dart';
@@ -45,6 +46,18 @@ class RedesignToolsPage extends StatelessWidget {
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const WebPage()),
+                ),
+              ),
+              _ToolTile(
+                icon: AppIcons.group_outlined,
+                iconColor: AppColors.primaryLight,
+                title: context.l10nText('People'),
+                subtitle: context.l10nText(
+                  'Friends, shops and who you transact with',
+                ),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const PeoplePage()),
                 ),
               ),
               _ToolTile(

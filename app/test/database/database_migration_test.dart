@@ -7,7 +7,7 @@ import 'package:totals/database/database_helper.dart';
 
 import 'database_fixture.dart';
 
-const _schemaVersion = 33;
+const _schemaVersion = 34;
 
 void main() {
   late Directory tempDirectory;
@@ -31,13 +31,13 @@ void main() {
     }
   });
 
-  test('fresh database creates a healthy v33 schema and reopens cleanly',
+  test('fresh database creates a healthy v34 schema and reopens cleanly',
       () async {
     int? categoryCount;
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV33(db);
+        await _expectHealthyV34(db);
         final count = (await db.rawQuery(
           'SELECT COUNT(*) AS count FROM categories',
         ))
@@ -48,13 +48,13 @@ void main() {
     }
   });
 
-  test('exact v4 schema upgrades to v33 without losing sentinel data',
+  test('exact v4 schema upgrades to v34 without losing sentinel data',
       () async {
     await DatabaseFixture.createV4(databaseFactoryFfi, databasePath);
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV33(db);
+        await _expectHealthyV34(db);
 
         final transaction = (await db.query(
           'transactions',
@@ -111,7 +111,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV33(db);
+        await _expectHealthyV34(db);
 
         final renamed = (await db.query(
           'categories',
@@ -153,7 +153,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV33(db);
+        await _expectHealthyV34(db);
 
         final renamed = (await db.query(
           'categories',
@@ -185,7 +185,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV33(db);
+        await _expectHealthyV34(db);
 
         final legacyRule = (await db.query(
           'auto_category_rules',
@@ -215,7 +215,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV33(db);
+        await _expectHealthyV34(db);
 
         final entry = (await db.query(
           'loan_debt_entries',
@@ -269,7 +269,7 @@ void main() {
 
       for (var pass = 0; pass < 2; pass++) {
         await _withDatabase(databasePath, (db) async {
-          await _expectHealthyV33(db);
+          await _expectHealthyV34(db);
 
           final transaction = (await db.query(
             'transactions',
@@ -304,14 +304,14 @@ void main() {
     });
   }
 
-  test('exact v28 schema upgrades through v33 idempotently', () async {
+  test('exact v28 schema upgrades through v34 idempotently', () async {
     await _withDatabase(databasePath, (db) async {
       await DatabaseFixture.replaceV29OwnershipShapeWithV28(db);
     });
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV33(db);
+        await _expectHealthyV34(db);
 
         final transaction = (await db.query(
           'transactions',
@@ -371,7 +371,7 @@ void main() {
 
     for (var pass = 0; pass < 2; pass++) {
       await _withDatabase(databasePath, (db) async {
-        await _expectHealthyV33(db);
+        await _expectHealthyV34(db);
 
         final custom = (await db.query(
           'categories',
@@ -405,7 +405,7 @@ void main() {
     });
 
     await _withDatabase(databasePath, (db) async {
-      await _expectHealthyV33(db);
+      await _expectHealthyV34(db);
       await db.insert('transactions', {
         'amount': 25,
         'reference': 'source-sms-migration',
@@ -423,6 +423,82 @@ void main() {
       );
 
       expect(await db.query('transaction_source_sms'), isEmpty);
+    });
+  });
+
+  test('v33 database backfills people from loan and debt names', () async {
+    await _withDatabase(databasePath, (db) async {
+      await db.execute('DROP TRIGGER IF EXISTS trg_people_delete');
+      await db.execute('DROP TRIGGER IF EXISTS trg_transaction_people_tx_delete');
+      await db.execute('DROP TABLE transaction_people');
+      await db.execute('DROP TABLE person_identifiers');
+      await db.execute('DROP TABLE people');
+      await db.execute('DROP INDEX IF EXISTS idx_loan_debt_entries_personId');
+      await db.execute('ALTER TABLE loan_debt_entries DROP COLUMN personId');
+      for (final row in <List<String>>[
+        ['loan-a', 'Abebe  Kebede', 'lent'],
+        ['loan-b', 'abebe kebede', 'lent'],
+        ['loan-c', 'Sara', 'borrowed'],
+      ]) {
+        await db.insert('loan_debt_entries', {
+          'transactionReference': row[0],
+          'personName': row[1],
+          'direction': row[2],
+          'createdAt': '2026-05-01T10:00:00.000',
+          'updatedAt': '2026-05-01T10:00:00.000',
+        });
+      }
+      await db.setVersion(33);
+    });
+
+    for (var pass = 0; pass < 2; pass++) {
+      await _withDatabase(databasePath, (db) async {
+        await _expectHealthyV34(db);
+
+        final people = await db.query('people', orderBy: 'name');
+        expect(people.map((row) => row['name']), ['Abebe Kebede', 'Sara']);
+        expect(people.map((row) => row['type']).toSet(), {'friend'});
+
+        final entries = await db.query(
+          'loan_debt_entries',
+          orderBy: 'transactionReference',
+        );
+        final abebeId = people.first['id'];
+        expect(entries.map((row) => row['personId']), [
+          abebeId,
+          abebeId,
+          people.last['id'],
+        ]);
+        expect(entries.first['personName'], 'Abebe  Kebede');
+      });
+    }
+
+    await _withDatabase(databasePath, (db) async {
+      await db.insert('transactions', {
+        'amount': 10,
+        'reference': 'people-cascade',
+      });
+      final personId = (await db.query('people')).first['id'] as int;
+      await db.insert('transaction_people', {
+        'transactionReference': 'people-cascade',
+        'personId': personId,
+        'source': 'manual',
+        'createdAt': '2026-05-01T10:00:00.000',
+      });
+      await db.delete(
+        'transactions',
+        where: 'reference = ?',
+        whereArgs: ['people-cascade'],
+      );
+      expect(await db.query('transaction_people'), isEmpty);
+
+      await db.delete('people', where: 'id = ?', whereArgs: [personId]);
+      final orphaned = await db.query(
+        'loan_debt_entries',
+        where: 'personId = ?',
+        whereArgs: [personId],
+      );
+      expect(orphaned, isEmpty);
     });
   });
 }
@@ -445,7 +521,7 @@ Future<T> _withDatabase<T>(
   }
 }
 
-Future<void> _expectHealthyV33(Database db) async {
+Future<void> _expectHealthyV34(Database db) async {
   expect(await db.getVersion(), _schemaVersion);
 
   final integrity = await db.rawQuery('PRAGMA integrity_check');
@@ -606,6 +682,33 @@ Future<void> _expectHealthyV33(Database db) async {
       AND name = 'trg_transaction_source_sms_tx_delete'
   ''');
   expect(sourceSmsTriggers, hasLength(1));
+
+  expect(
+    await _columnNames(db, 'people'),
+    containsAll(<String>{'id', 'name', 'type', 'note', 'telegramHandle'}),
+  );
+  expect(
+    await _columnNames(db, 'person_identifiers'),
+    containsAll(<String>{
+      'personId',
+      'kind',
+      'bankId',
+      'value',
+      'valueCanonical',
+    }),
+  );
+  expect(
+    await _columnNames(db, 'transaction_people'),
+    containsAll(<String>{'transactionReference', 'personId', 'source'}),
+  );
+  expect(await _columnNames(db, 'loan_debt_entries'), contains('personId'));
+  final peopleTriggers = await db.rawQuery('''
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name IN ('trg_transaction_people_tx_delete', 'trg_people_delete')
+  ''');
+  expect(peopleTriggers, hasLength(2));
 
   final duplicateBuiltInKeys = await db.rawQuery('''
     SELECT builtInKey
