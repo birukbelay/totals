@@ -7,9 +7,11 @@ import 'package:totals/_redesign/theme/app_colors.dart';
 import 'package:totals/_redesign/theme/app_icons.dart';
 import 'package:totals/_redesign/widgets/person_picker_sheet.dart';
 import 'package:totals/_redesign/widgets/reimbursement_link_sheet.dart';
+import 'package:totals/_redesign/widgets/split_transaction_sheet.dart';
 import 'package:totals/models/category.dart';
 import 'package:totals/models/summary_models.dart';
 import 'package:totals/models/transaction.dart';
+import 'package:totals/models/transaction_split.dart';
 import 'package:totals/providers/transaction_provider.dart';
 import 'package:totals/repositories/loan_debt_repository.dart';
 import 'package:totals/repositories/reimbursement_repository.dart';
@@ -19,6 +21,7 @@ import 'package:totals/utils/app_date_format.dart';
 import 'package:totals/utils/account_sort.dart';
 import 'package:totals/utils/loan_debt_utils.dart';
 import 'package:totals/utils/reimbursement_utils.dart';
+import 'package:totals/utils/split_amounts.dart';
 import 'package:totals/utils/category_sort.dart';
 import 'package:totals/utils/text_utils.dart';
 import 'package:totals/utils/transaction_link_utils.dart';
@@ -1692,6 +1695,8 @@ class _TransactionDetailsSheetState extends State<_TransactionDetailsSheet> {
 
                       _buildPersonRow(),
 
+                      if (_canSplit) ..._buildSplitSection(),
+
                       _buildNoteSection(),
 
                       ReimbursementRelationshipsSection(
@@ -1781,6 +1786,76 @@ class _TransactionDetailsSheetState extends State<_TransactionDetailsSheet> {
     await _provider.setTransactionPerson(_tx, personId);
     if (!mounted) return;
     setState(() {});
+  }
+
+  bool get _canSplit =>
+      _tx.reference.trim().isNotEmpty &&
+      _tx.type?.toUpperCase() == 'DEBIT' &&
+      splitAllocatableAmount(_tx) > 0;
+
+  Future<void> _openSplitEditor() async {
+    final saved = await showSplitTransactionSheet(
+      context: context,
+      transaction: _tx,
+      provider: _provider,
+    );
+    if (saved != true || !mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _toggleSplitStatus(TransactionSplit split) async {
+    final next = split.isPending
+        ? TransactionSplitStatus.paid
+        : TransactionSplitStatus.pending;
+    await _provider.setTransactionSplitStatus(split, next);
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  String _splitLabel(TransactionSplit split) {
+    if (split.isOwedByPerson) {
+      final name = _provider.personById(split.personId)?.name ??
+          context.l10nText('Unknown person');
+      final kind = split.kind == TransactionSplitKind.loan
+          ? context.l10nText('Loan')
+          : context.l10nText('Bill share');
+      return '$kind · $name';
+    }
+    return _provider.getCategoryById(split.categoryId)?.name ??
+        context.l10nText('Main category');
+  }
+
+  List<Widget> _buildSplitSection() {
+    final splits = _provider.splitsForTransaction(_tx);
+    final remaining = splitRemainingAmount(_tx, splits);
+    return [
+      _DetailRow(
+        label: 'Split',
+        value: splits.isEmpty
+            ? context.l10nText('Tap to split')
+            : '${splits.length} ${context.l10nText('parts')}',
+        onTap: () {
+          unawaited(_openSplitEditor());
+        },
+        trailingIcon: AppIcons.call_split,
+      ),
+      for (final split in splits)
+        _SplitPartRow(
+          label: _splitLabel(split),
+          amount: split.amount,
+          status: split.isOwedByPerson ? split.status : null,
+          onToggleStatus: split.isOwedByPerson
+              ? () {
+                  unawaited(_toggleSplitStatus(split));
+                }
+              : null,
+        ),
+      if (splits.isNotEmpty && remaining > 0)
+        _SplitPartRow(
+          label: context.l10nText('Remaining (main category)'),
+          amount: remaining,
+        ),
+    ];
   }
 
   Widget _buildPersonRow() {
@@ -2416,6 +2491,78 @@ const List<_CategoryColorOption> _kCategoryColorOptions = [
 ];
 
 // ── Detail row ──────────────────────────────────────────────────────────────
+
+class _SplitPartRow extends StatelessWidget {
+  final String label;
+  final double amount;
+  final TransactionSplitStatus? status;
+  final VoidCallback? onToggleStatus;
+
+  const _SplitPartRow({
+    required this.label,
+    required this.amount,
+    this.status,
+    this.onToggleStatus,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final paid = status == TransactionSplitStatus.paid;
+    return Padding(
+      padding: const EdgeInsets.only(left: 12, top: 8, bottom: 8),
+      child: Row(
+        children: [
+          Icon(
+            AppIcons.chevron_right_rounded,
+            size: 14,
+            color: AppColors.textTertiary(context),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: AppColors.textSecondary(context),
+              ),
+            ),
+          ),
+          Text(
+            'ETB ${formatNumberWithComma(amount)}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: AppColors.textPrimary(context),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (status != null) ...[
+            const SizedBox(width: 8),
+            InkWell(
+              onTap: onToggleStatus,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: (paid ? AppColors.incomeSuccess : AppColors.amber)
+                      .withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  context.l10nText(paid ? 'Paid' : 'Pending'),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: paid ? AppColors.incomeSuccess : AppColors.amber,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
 
 class _DetailRow extends StatelessWidget {
   final String label;

@@ -62,6 +62,13 @@ void main() {
     ]) {
       expect(await _count(db, table), 1, reason: table);
     }
+
+    // Loan and bill-share splits go with loans; category splits stay.
+    expect(await _count(db, 'transaction_splits'), 1);
+    expect(
+      await _countWhere(db, 'transaction_splits', 'kind = ?', ['expense']),
+      1,
+    );
   });
 
   test('existing clear choices remain independent from the new groups',
@@ -94,6 +101,9 @@ void main() {
     ]) {
       expect(await _count(db, table), 1, reason: table);
     }
+
+    // Splits are deleted together with their parent transaction.
+    expect(await _count(db, 'transaction_splits'), 0);
   });
 
   test('clears transactions and accounts for only the selected banks',
@@ -160,6 +170,7 @@ Future<int> _countWhere(
 
 Future<void> _seedClearableData(Database db) async {
   for (final table in const [
+    'transaction_splits',
     'loan_debt_repayments',
     'loan_debt_entries',
     'auto_category_prompt_dismissals',
@@ -186,6 +197,16 @@ Future<void> _seedClearableData(Database db) async {
     'amount': 10,
     'reference': 'transaction-reference',
   });
+  for (final kind in const ['expense', 'loan']) {
+    await db.insert('transaction_splits', {
+      'parentReference': 'transaction-reference',
+      'amount': 2,
+      'kind': kind,
+      'status': kind == 'loan' ? 'pending' : null,
+      'createdAt': now,
+      'updatedAt': now,
+    });
+  }
   await db.insert('budgets', {
     'name': 'Monthly',
     'type': 'expense',

@@ -1,8 +1,11 @@
 import 'package:totals/models/budget.dart';
 import 'package:totals/models/transaction.dart';
+import 'package:totals/models/transaction_split.dart';
 import 'package:totals/repositories/budget_repository.dart';
 import 'package:totals/repositories/reimbursement_repository.dart';
 import 'package:totals/repositories/transaction_repository.dart';
+import 'package:totals/repositories/transaction_split_repository.dart';
+import 'package:totals/utils/split_amounts.dart';
 import 'package:totals/utils/transaction_amounts.dart';
 
 class BudgetService {
@@ -10,6 +13,8 @@ class BudgetService {
   final TransactionRepository _transactionRepository = TransactionRepository();
   final ReimbursementRepository _reimbursementRepository =
       ReimbursementRepository();
+  final TransactionSplitRepository _splitRepository =
+      TransactionSplitRepository();
 
   // Calculate spending for a given period and category
   Future<double> calculateSpending({
@@ -33,19 +38,16 @@ class BudgetService {
       ids.add(categoryId);
     }
 
-    final filtered = ids.isEmpty
-        ? transactions
-        : transactions
-            .where((transaction) =>
-                transaction.selectedCategoryIds.any(ids.contains))
-            .toList(growable: false);
     final reimbursedByReference =
         await _reimbursementRepository.getAppliedTotalsForExpenses(
-      filtered.map((transaction) => transaction.reference),
+      transactions.map((transaction) => transaction.reference),
     );
+    final splitsByReference = await _splitRepository.getAllSplits();
     return _sumNetSpending(
-      filtered,
+      transactions,
       reimbursedByReference,
+      splitsByReference,
+      categoryIds: ids,
     );
   }
 
@@ -120,6 +122,7 @@ class BudgetService {
     }
 
     final statuses = List<BudgetStatus?>.filled(budgets.length, null);
+    Map<String, List<TransactionSplit>>? splitsByReference;
     for (final requests in requestsByPeriod.values) {
       final periodStart = requests.first.periodStart;
       final periodEnd = requests.first.periodEnd;
@@ -133,18 +136,14 @@ class BudgetService {
           await _reimbursementRepository.getAppliedTotalsForExpenses(
         transactions.map((transaction) => transaction.reference),
       );
+      splitsByReference ??= await _splitRepository.getAllSplits();
 
       for (final request in requests) {
-        final categoryIds = request.budget.selectedCategoryIds.toSet();
-        final applicableTransactions = categoryIds.isEmpty
-            ? transactions
-            : transactions.where(
-                (transaction) =>
-                    transaction.selectedCategoryIds.any(categoryIds.contains),
-              );
         final spent = _sumNetSpending(
-          applicableTransactions,
+          transactions,
           reimbursedByReference,
+          splitsByReference,
+          categoryIds: request.budget.selectedCategoryIds.toSet(),
         );
         statuses[request.index] = _buildStatus(
           request: request,
@@ -160,20 +159,38 @@ class BudgetService {
     );
   }
 
+  /// Net spending of [transactions] in [categoryIds], or all spending when
+  /// [categoryIds] is empty. Splits move parts of a payment into their own
+  /// categories; loans and bill shares never count as spending.
   double _sumNetSpending(
     Iterable<Transaction> transactions,
     Map<String, double> reimbursedByReference,
-  ) {
+    Map<String, List<TransactionSplit>> splitsByReference, {
+    required Set<int> categoryIds,
+  }) {
     return transactions.fold<double>(
       0.0,
       (sum, transaction) {
+        final reference = transaction.reference.trim();
         final gross = transactionDebitOutflow(transaction);
-        final reimbursed =
-            reimbursedByReference[transaction.reference.trim()] ?? 0.0;
+        final reimbursed = reimbursedByReference[reference] ?? 0.0;
+        final net = expenseAmountAfterReimbursement(
+          grossExpense: gross,
+          reimbursedAmount: reimbursed,
+        );
+        final splits = splitsByReference[reference];
+        if (splits == null || splits.isEmpty) {
+          final matches = categoryIds.isEmpty ||
+              transaction.selectedCategoryIds.any(categoryIds.contains);
+          return matches ? sum + net : sum;
+        }
         return sum +
-            expenseAmountAfterReimbursement(
-              grossExpense: gross,
-              reimbursedAmount: reimbursed,
+            splitAwareCategoryAmount(
+              expenseAmount: net,
+              splits: splits,
+              parentCategoryIds: transaction.selectedCategoryIds,
+              matchesCategory: categoryIds.contains,
+              matchAll: categoryIds.isEmpty,
             );
       },
     );

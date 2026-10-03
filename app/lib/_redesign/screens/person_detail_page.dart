@@ -11,6 +11,7 @@ import 'package:totals/l10n/app_localizations.dart';
 import 'package:totals/models/loan_debt_entry.dart';
 import 'package:totals/models/person.dart';
 import 'package:totals/models/transaction.dart';
+import 'package:totals/models/transaction_split.dart';
 import 'package:totals/providers/transaction_provider.dart';
 import 'package:totals/repositories/person_repository.dart';
 import 'package:totals/services/person_analytics_service.dart';
@@ -176,6 +177,11 @@ class _PersonDetailPageState extends State<PersonDetailPage> {
         final transactions = provider.transactionsForPerson(widget.personId)
           ..sort((a, b) => (b.time ?? '').compareTo(a.time ?? ''));
         final loans = provider.loanDebtEntriesForPerson(widget.personId);
+        final splitShares = provider
+            .splitsForPerson(widget.personId)
+            .where((split) => split.isOwedByPerson)
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
         return Scaffold(
           backgroundColor: AppColors.background(context),
@@ -254,6 +260,12 @@ class _PersonDetailPageState extends State<PersonDetailPage> {
                 ),
                 for (final entry in loans)
                   _LoanTile(entry: entry, provider: provider),
+              ],
+              if (splitShares.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                _SectionTitle(title: context.l10nText('Split shares')),
+                for (final split in splitShares)
+                  _SplitShareTile(split: split, provider: provider),
               ],
               const SizedBox(height: 20),
               _SectionTitle(title: context.l10nText('Transactions')),
@@ -565,6 +577,67 @@ class _LoanTile extends StatelessWidget {
               '${context.l10nText('ETB')} ${formatNumberWithComma(amount)}',
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
+    );
+  }
+}
+
+class _SplitShareTile extends StatelessWidget {
+  final TransactionSplit split;
+  final TransactionProvider provider;
+
+  const _SplitShareTile({required this.split, required this.provider});
+
+  @override
+  Widget build(BuildContext context) {
+    final parent = provider.transactionByReference(split.parentReference);
+    final time = DateTime.tryParse(parent?.time ?? '')?.toLocal();
+    final paid = split.status == TransactionSplitStatus.paid;
+    final kindLabel = split.kind == TransactionSplitKind.loan
+        ? 'Loan from split'
+        : 'Bill share';
+    final statusColor = paid ? AppColors.incomeSuccess : AppColors.amber;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      leading: const Icon(AppIcons.call_split, color: AppColors.amber),
+      title: Text(context.l10nText(kindLabel)),
+      subtitle: Text(
+        [
+          context.l10nText(paid ? 'Paid' : 'Pending'),
+          if (time != null)
+            AppDateFormat.monthDayMaybeYear(time, context: context),
+        ].join(' · '),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${context.l10nText('ETB')} ${formatNumberWithComma(split.amount)}',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          IconButton(
+            tooltip: context.l10nText(paid ? 'Mark pending' : 'Mark paid'),
+            icon: Icon(
+              paid ? AppIcons.check_circle_rounded : AppIcons.schedule_rounded,
+              color: statusColor,
+              size: 20,
+            ),
+            onPressed: () => provider.setTransactionSplitStatus(
+              split,
+              paid
+                  ? TransactionSplitStatus.pending
+                  : TransactionSplitStatus.paid,
+            ),
+          ),
+        ],
+      ),
+      onTap: parent == null
+          ? null
+          : () => showTransactionDetailsSheet(
+                context: context,
+                transaction: parent,
+                provider: provider,
+              ),
     );
   }
 }

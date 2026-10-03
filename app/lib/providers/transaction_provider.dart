@@ -10,6 +10,7 @@ import 'package:totals/models/loan_debt_entry.dart';
 import 'package:totals/models/person.dart';
 import 'package:totals/models/reimbursement_allocation.dart';
 import 'package:totals/models/transaction.dart';
+import 'package:totals/models/transaction_split.dart';
 import 'package:totals/models/summary_models.dart';
 import 'package:totals/repositories/account_repository.dart';
 import 'package:totals/repositories/category_repository.dart';
@@ -18,6 +19,7 @@ import 'package:totals/repositories/person_repository.dart';
 import 'package:totals/repositories/reimbursement_repository.dart';
 import 'package:totals/repositories/shared_expense_repository.dart';
 import 'package:totals/repositories/transaction_repository.dart';
+import 'package:totals/repositories/transaction_split_repository.dart';
 import 'package:totals/constants/cash_constants.dart';
 import 'package:totals/services/bank_config_service.dart';
 import 'package:totals/services/budget_alert_service.dart';
@@ -35,6 +37,7 @@ import 'package:totals/utils/auto_categorization_rules_share_payload.dart';
 import 'package:totals/utils/category_filter_utils.dart';
 import 'package:totals/utils/loan_debt_utils.dart';
 import 'package:totals/utils/reimbursement_utils.dart';
+import 'package:totals/utils/split_amounts.dart';
 import 'package:totals/utils/text_utils.dart';
 import 'package:totals/utils/transaction_amounts.dart';
 
@@ -179,6 +182,7 @@ class TransactionProvider with ChangeNotifier {
   final SharedExpenseRepository _sharedExpenseRepo = SharedExpenseRepository();
   final LoanDebtRepository _loanDebtRepo = LoanDebtRepository();
   final PersonRepository _personRepo = PersonRepository();
+  final TransactionSplitRepository _splitRepo = TransactionSplitRepository();
   final ReimbursementRepository _reimbursementRepo = ReimbursementRepository();
   final BudgetAlertService _budgetAlertService = BudgetAlertService();
   final AutoCategorizationService _autoCategorizationService =
@@ -226,6 +230,7 @@ class TransactionProvider with ChangeNotifier {
   List<LoanDebtEntry> _loanDebtEntries = const [];
   List<LoanDebtRepayment> _loanDebtRepayments = const [];
   PeopleAnalytics? _peopleAnalytics;
+  Map<String, List<TransactionSplit>> _splitsByReference = const {};
   List<ReimbursementAllocation> _reimbursementAllocations = const [];
   Map<String, List<ReimbursementAllocation>> _reimbursementsByCreditReference =
       const {};
@@ -471,6 +476,7 @@ class TransactionProvider with ChangeNotifier {
       links: _personLinkByReference,
       loanEntries: _loanDebtEntries,
       repayments: _loanDebtRepayments,
+      splitsByReference: _splitsByReference,
       expenseAmount: netExpenseAmountForTransaction,
       incomeAmount: incomeAmountForTransaction,
     );
@@ -516,6 +522,94 @@ class TransactionProvider with ChangeNotifier {
       _people = const [];
       _personById = const {};
       _personLinkByReference = const {};
+    }
+  }
+
+  List<TransactionSplit> splitsForTransaction(Transaction transaction) {
+    return _splitsByReference[transaction.reference.trim()] ??
+        const <TransactionSplit>[];
+  }
+
+  bool hasSplits(Transaction transaction) =>
+      _splitsByReference.containsKey(transaction.reference.trim());
+
+  List<TransactionSplit> splitsForPerson(int personId) {
+    return [
+      for (final splits in _splitsByReference.values)
+        for (final split in splits)
+          if (split.personId == personId) split,
+    ];
+  }
+
+  /// Expense parts of [transaction] for category breakdowns: its splits plus
+  /// the unsplit remainder, based on [netExpenseAmountForTransaction].
+  List<TransactionAmountPart> expensePartsForTransaction(
+    Transaction transaction,
+  ) {
+    return transactionExpenseParts(
+      expenseAmount: netExpenseAmountForTransaction(transaction),
+      splits: splitsForTransaction(transaction),
+    );
+  }
+
+  /// Budget spend of [transaction] toward categories matched by
+  /// [matchesCategory], honoring splits. With [matchAll] (an all-expenses
+  /// budget) only loans and bill shares are left out.
+  double budgetExpenseAmountForCategories(
+    Transaction transaction, {
+    required bool Function(int categoryId) matchesCategory,
+    bool matchAll = false,
+  }) {
+    return splitAwareCategoryAmount(
+      expenseAmount: budgetExpenseAmountForTransaction(transaction),
+      splits: splitsForTransaction(transaction),
+      parentCategoryIds: transaction.selectedCategoryIds,
+      matchesCategory: matchesCategory,
+      matchAll: matchAll,
+    );
+  }
+
+  Future<List<TransactionSplit>> saveTransactionSplits(
+    Transaction transaction,
+    List<TransactionSplit> splits,
+  ) async {
+    final saved = await _splitRepo.saveSplits(transaction, splits);
+    await refreshSplits();
+    return saved;
+  }
+
+  Future<void> setTransactionSplitStatus(
+    TransactionSplit split,
+    TransactionSplitStatus status,
+  ) async {
+    final id = split.id;
+    if (id == null) return;
+    await _splitRepo.setSplitStatus(id, status);
+    await refreshSplits();
+  }
+
+  Future<void> refreshSplits() async {
+    await _reloadSplitState();
+    _dataVersion += 1;
+    notifyListeners();
+  }
+
+  Future<void> _reloadSplitState() async {
+    _peopleAnalytics = null;
+    try {
+      _splitsByReference = Map<String, List<TransactionSplit>>.unmodifiable(
+        (await _splitRepo.getAllSplits()).map(
+          (reference, splits) => MapEntry(
+            reference,
+            List<TransactionSplit>.unmodifiable(splits),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('debug: Could not load transaction splits: $error');
+      }
+      _splitsByReference = const {};
     }
   }
 
@@ -853,6 +947,7 @@ class TransactionProvider with ChangeNotifier {
       }
       await _refreshLoanDebtPeople();
       await _reloadPeopleState();
+      await _reloadSplitState();
       debugPrint("debug: Transactions: ${_allTransactions.length}");
 
       final banks = await _bankConfigService.getBanks();

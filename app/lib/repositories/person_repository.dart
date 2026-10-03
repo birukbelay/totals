@@ -152,6 +152,12 @@ class PersonRepository {
         where: 'personId = ?',
         whereArgs: [sourceId],
       );
+      await txn.update(
+        'transaction_splits',
+        {'personId': targetId},
+        where: 'personId = ?',
+        whereArgs: [sourceId],
+      );
       await txn.delete('people', where: 'id = ?', whereArgs: [sourceId]);
     });
   }
@@ -316,6 +322,7 @@ class PersonRepository {
     final db = await DatabaseHelper.instance.database;
     await db.transaction((txn) async {
       await txn.update('loan_debt_entries', {'personId': null});
+      await txn.update('transaction_splits', {'personId': null});
       await txn.delete('transaction_people');
       await txn.delete('person_identifiers');
       await txn.delete('people');

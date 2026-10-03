@@ -23,6 +23,7 @@ class AppIcons {
   static const IconData bolt_rounded = PhosphorIconsRegular.lightning;
   static const IconData calendar_today_outlined =
       PhosphorIconsRegular.calendarBlank;
+  static const IconData call_split = PhosphorIconsRegular.arrowsSplit;
   static const IconData category = PhosphorIconsRegular.shapes;
   static const IconData check_circle_rounded = PhosphorIconsRegular.checkCircle;
   static const IconData check_rounded = PhosphorIconsRegular.check;

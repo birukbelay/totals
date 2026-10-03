@@ -36,6 +36,7 @@ import 'package:totals/utils/app_date_format.dart';
 import 'package:totals/utils/account_reconciliation.dart';
 import 'package:totals/utils/category_filter_utils.dart';
 import 'package:totals/utils/reconciliation_ledger_filter.dart';
+import 'package:totals/utils/split_amounts.dart';
 import 'package:totals/utils/account_sort.dart';
 import 'package:totals/utils/text_utils.dart';
 import 'package:totals/utils/transaction_amounts.dart';
@@ -2865,11 +2866,23 @@ class RedesignMoneyPageState extends State<RedesignMoneyPage>
             : !isMisc && (category?.name.trim().isNotEmpty ?? false)
                 ? category!.name.trim()
                 : 'Other';
-        final categoryAmount = categoryMode == _AnalyticsHeatmapMode.income
-            ? incomeAmount
-            : expenseAmount;
-        categoryTotals[categoryName] =
-            (categoryTotals[categoryName] ?? 0.0) + categoryAmount;
+        if (categoryMode == _AnalyticsHeatmapMode.income) {
+          categoryTotals[categoryName] =
+              (categoryTotals[categoryName] ?? 0.0) + incomeAmount;
+        } else if (isSelfTransfer || !provider.hasSplits(transaction)) {
+          categoryTotals[categoryName] =
+              (categoryTotals[categoryName] ?? 0.0) + expenseAmount;
+        } else {
+          for (final part in provider.expensePartsForTransaction(transaction)) {
+            final partName = _splitPartCategoryLabel(
+              provider,
+              part,
+              fallback: categoryName,
+            );
+            categoryTotals[partName] =
+                (categoryTotals[partName] ?? 0.0) + part.amount;
+          }
+        }
       }
 
       if (isDebit && expenseAmount > 0) {
@@ -5214,6 +5227,27 @@ String _amountLabel(
 }) {
   final formatted = formatNumberWithComma(amount);
   return '${isCredit ? '+' : '-'} ${context.l10nText('ETB')} $formatted';
+}
+
+/// Analytics bucket for the loan and bill-share parts of split payments.
+const String _splitOwedCategoryLabel = 'Lent & shared';
+
+/// Category label for one part of a split expense. The parent remainder
+/// keeps [fallback], the parent's own label.
+String _splitPartCategoryLabel(
+  TransactionProvider provider,
+  TransactionAmountPart part, {
+  required String fallback,
+}) {
+  if (part.isOwedByPerson) return _splitOwedCategoryLabel;
+  final categoryId = part.categoryId;
+  if (categoryId == null) return fallback;
+  final category = provider.getCategoryById(categoryId);
+  final name = category?.name.trim() ?? '';
+  if (category == null || category.uncategorized || name.isEmpty) {
+    return 'Other';
+  }
+  return name;
 }
 
 String _transactionCounterparty(Transaction transaction,
@@ -10387,34 +10421,45 @@ class _AnalyticsBarChartCard extends StatelessWidget {
       final bucketIndex = bucketIndexFor(dt);
       if (bucketIndex == null) continue;
 
-      final category = transaction.categoryId == null
-          ? null
-          : provider.getCategoryById(transaction.categoryId!);
-      final categoryName = category?.name.trim() ?? '';
-      final isOther =
-          category == null || category.uncategorized || categoryName.isEmpty;
       final isTransferFee = isSelfTransfer && isExpense;
-      final label = isTransferFee
-          ? 'Fees & VAT'
-          : isOther
-              ? 'Other'
-              : categoryName;
-      final key = isTransferFee
-          ? 'fees-and-vat'
-          : isOther
-              ? 'other'
-              : 'category:${category.id}';
-      final accumulator = statsByKey.putIfAbsent(
-        key,
-        () => _AnalyticsBarCategoryAccumulator(
-          label: label,
-          bucketValues: List<double>.filled(bucketCount, 0.0),
-          orderSeed: statsByKey.length,
-        ),
-      );
+      final parts = isExpense && !isTransferFee
+          ? provider.expensePartsForTransaction(transaction)
+          : <TransactionAmountPart>[
+              TransactionAmountPart(split: null, amount: amount),
+            ];
+      for (final part in parts) {
+        final categoryId = part.categoryId ?? transaction.categoryId;
+        final category =
+            categoryId == null ? null : provider.getCategoryById(categoryId);
+        final categoryName = category?.name.trim() ?? '';
+        final isOther =
+            category == null || category.uncategorized || categoryName.isEmpty;
+        final label = isTransferFee
+            ? 'Fees & VAT'
+            : part.isOwedByPerson
+                ? _splitOwedCategoryLabel
+                : isOther
+                    ? 'Other'
+                    : categoryName;
+        final key = isTransferFee
+            ? 'fees-and-vat'
+            : part.isOwedByPerson
+                ? 'lent-and-shared'
+                : isOther
+                    ? 'other'
+                    : 'category:${category.id}';
+        final accumulator = statsByKey.putIfAbsent(
+          key,
+          () => _AnalyticsBarCategoryAccumulator(
+            label: label,
+            bucketValues: List<double>.filled(bucketCount, 0.0),
+            orderSeed: statsByKey.length,
+          ),
+        );
 
-      accumulator.bucketValues[bucketIndex] += amount;
-      accumulator.total += amount;
+        accumulator.bucketValues[bucketIndex] += part.amount;
+        accumulator.total += part.amount;
+      }
     }
 
     final sorted = statsByKey.values.toList()

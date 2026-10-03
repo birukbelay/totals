@@ -49,7 +49,7 @@ class DatabaseHelper {
     final db = await _databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 34,
+        version: 35,
         onCreate: _createDB,
         onUpgrade: _upgradeDB,
       ),
@@ -59,7 +59,7 @@ class DatabaseHelper {
     // the post-open path read-only and fail with a useful invariant name if a
     // database was produced by an unknown or interrupted build.
     try {
-      await _validateV34Schema(db);
+      await _validateV35Schema(db);
     } catch (_) {
       await db.close();
       rethrow;
@@ -340,6 +340,7 @@ class DatabaseHelper {
     await _ensureReimbursementSchema(db);
     await _ensureTransactionSourceSmsSchema(db);
     await _ensurePeopleSchema(db);
+    await _ensureTransactionSplitsSchema(db);
 
     await _seedBuiltInCategories(db);
     await _ensureSyncSchema(db);
@@ -370,6 +371,9 @@ class DatabaseHelper {
       if (newVersion >= 34) {
         await _migrateV33ToV34(db);
       }
+      if (newVersion >= 35) {
+        await _migrateV34ToV35(db);
+      }
       return;
     }
 
@@ -390,6 +394,9 @@ class DatabaseHelper {
       if (newVersion >= 34) {
         await _migrateV33ToV34(db);
       }
+      if (newVersion >= 35) {
+        await _migrateV34ToV35(db);
+      }
       return;
     }
 
@@ -407,6 +414,9 @@ class DatabaseHelper {
       if (newVersion >= 34) {
         await _migrateV33ToV34(db);
       }
+      if (newVersion >= 35) {
+        await _migrateV34ToV35(db);
+      }
       return;
     }
 
@@ -421,6 +431,9 @@ class DatabaseHelper {
       if (newVersion >= 34) {
         await _migrateV33ToV34(db);
       }
+      if (newVersion >= 35) {
+        await _migrateV34ToV35(db);
+      }
       return;
     }
 
@@ -432,6 +445,9 @@ class DatabaseHelper {
       if (newVersion >= 34) {
         await _migrateV33ToV34(db);
       }
+      if (newVersion >= 35) {
+        await _migrateV34ToV35(db);
+      }
       return;
     }
 
@@ -440,11 +456,22 @@ class DatabaseHelper {
       if (newVersion >= 34) {
         await _migrateV33ToV34(db);
       }
+      if (newVersion >= 35) {
+        await _migrateV34ToV35(db);
+      }
       return;
     }
 
     if (oldVersion < 34) {
       await _migrateV33ToV34(db);
+      if (newVersion >= 35) {
+        await _migrateV34ToV35(db);
+      }
+      return;
+    }
+
+    if (oldVersion < 35) {
+      await _migrateV34ToV35(db);
       return;
     }
 
@@ -1073,6 +1100,14 @@ class DatabaseHelper {
   Future<void> _migrateV33ToV34(Database db) async {
     await _runV28Stage('v34 people', () => _ensurePeopleSchema(db));
     await _runV28Stage('v34 final validation', () => _validateV34Schema(db));
+  }
+
+  Future<void> _migrateV34ToV35(Database db) async {
+    await _runV28Stage(
+      'v35 transaction splits',
+      () => _ensureTransactionSplitsSchema(db),
+    );
+    await _runV28Stage('v35 final validation', () => _validateV35Schema(db));
   }
 
   Future<void> _runV28Stage(
@@ -2121,6 +2156,89 @@ class DatabaseHelper {
     if (triggers.length != 2) {
       throw StateError('v34 people triggers are missing');
     }
+  }
+
+  Future<void> _validateV35Schema(Database db) async {
+    await _validateV34Schema(db);
+    const requiredColumns = {
+      'id',
+      'parentReference',
+      'amount',
+      'categoryId',
+      'personId',
+      'kind',
+      'status',
+      'note',
+      'createdAt',
+      'updatedAt',
+    };
+    if (!await _v28TableExists(db, 'transaction_splits')) {
+      throw StateError('v35 invariant missing table transaction_splits');
+    }
+    final missing = requiredColumns.difference(
+      await _v28Columns(db, 'transaction_splits'),
+    );
+    if (missing.isNotEmpty) {
+      throw StateError(
+        'v35 invariant transaction_splits missing ${missing.join(', ')}',
+      );
+    }
+    final triggers = await db.rawQuery('''
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'trigger'
+        AND name IN (
+          'trg_transaction_splits_tx_delete',
+          'trg_people_delete_splits'
+        )
+    ''');
+    if (triggers.length != 2) {
+      throw StateError('v35 transaction split triggers are missing');
+    }
+  }
+
+  /// Transaction splits (v35): parts of one parent transaction attributed to
+  /// other categories, or lent / shared with people. Splits only re-attribute
+  /// the parent amount, so balances and totals are unaffected.
+  Future<void> _ensureTransactionSplitsSchema(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS transaction_splits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parentReference TEXT NOT NULL,
+        amount REAL NOT NULL CHECK (amount > 0),
+        categoryId INTEGER,
+        personId INTEGER,
+        kind TEXT NOT NULL DEFAULT 'expense',
+        status TEXT,
+        note TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_transaction_splits_parent '
+      'ON transaction_splits(parentReference)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_transaction_splits_person '
+      'ON transaction_splits(personId)',
+    );
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS trg_transaction_splits_tx_delete
+      AFTER DELETE ON transactions
+      BEGIN
+        DELETE FROM transaction_splits
+        WHERE parentReference = OLD.reference;
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS trg_people_delete_splits
+      AFTER DELETE ON people
+      BEGIN
+        UPDATE transaction_splits SET personId = NULL
+        WHERE personId = OLD.id;
+      END
+    ''');
   }
 
   /// People (v34): counterparties the user lends to, splits bills with, or

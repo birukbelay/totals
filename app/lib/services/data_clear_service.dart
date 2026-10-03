@@ -4,6 +4,7 @@ import 'package:totals/repositories/failed_parse_repository.dart';
 import 'package:totals/repositories/loan_debt_repository.dart';
 import 'package:totals/repositories/person_repository.dart';
 import 'package:totals/repositories/transaction_repository.dart';
+import 'package:totals/repositories/transaction_split_repository.dart';
 import 'package:totals/repositories/user_account_repository.dart';
 import 'package:totals/services/auto_categorization_service.dart';
 
@@ -63,6 +64,8 @@ class DataClearService {
     }
     if (selection.loansAndDebts) {
       await LoanDebtRepository().clearAll();
+      // Split loans and bill shares are loans too.
+      await TransactionSplitRepository().clearOwedSplits();
     }
     if (selection.people) {
       await PersonRepository().clearAll();

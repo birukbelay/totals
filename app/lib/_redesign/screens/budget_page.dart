@@ -21,6 +21,7 @@ import 'package:totals/utils/app_calendar_date_utils.dart';
 import 'package:totals/utils/app_date_format.dart';
 import 'package:totals/utils/category_icons.dart';
 import 'package:totals/utils/category_sort.dart';
+import 'package:totals/utils/split_amounts.dart';
 import 'package:totals/utils/text_utils.dart';
 import 'package:totals/_redesign/theme/app_icons.dart';
 import 'package:totals/l10n/app_localizations.dart';
@@ -486,17 +487,41 @@ class RedesignBudgetPageState extends State<RedesignBudgetPage> {
     List<Transaction> debits,
     TransactionProvider transactionProvider,
   ) {
-    return debits.where((t) => _transactionMatchesBudget(t, b)).fold(
-          0.0,
-          (sum, transaction) =>
-              sum +
-              transactionProvider
-                  .budgetExpenseAmountForTransaction(transaction),
-        );
+    return debits.fold(
+      0.0,
+      (sum, transaction) =>
+          sum +
+          _budgetAmountForTransaction(transaction, b, transactionProvider),
+    );
   }
 
-  bool _transactionMatchesBudget(Transaction transaction, Budget budget) {
+  /// Split-aware share of [transaction] that counts toward [budget].
+  double _budgetAmountForTransaction(
+    Transaction transaction,
+    Budget budget,
+    TransactionProvider transactionProvider,
+  ) {
+    return transactionProvider.budgetExpenseAmountForCategories(
+      transaction,
+      matchesCategory: budget.includesCategory,
+      matchAll: budget.appliesToAllExpenses,
+    );
+  }
+
+  bool _transactionMatchesBudget(
+    Transaction transaction,
+    Budget budget,
+    TransactionProvider transactionProvider,
+  ) {
     if (budget.appliesToAllExpenses) return true;
+    if (transactionProvider.hasSplits(transaction)) {
+      return _budgetAmountForTransaction(
+            transaction,
+            budget,
+            transactionProvider,
+          ) >
+          0;
+    }
     return transaction.selectedCategoryIds.any(budget.includesCategory);
   }
 
@@ -623,17 +648,21 @@ class RedesignBudgetPageState extends State<RedesignBudgetPage> {
     // Unbudgeted spending
     final budgetedCatIds = budgets.expand((b) => b.selectedCategoryIds).toSet();
     final hasCatchAllBudget = budgets.any((b) => b.appliesToAllExpenses);
-    final unbudgetedTxns = hasCatchAllBudget
-        ? <Transaction>[]
-        : debits.where((t) {
-            if (tp.isSelfTransfer(t)) return false;
-            return !t.selectedCategoryIds.any(budgetedCatIds.contains);
-          }).toList();
-    final unbudgetedAmount = unbudgetedTxns.fold(
-      0.0,
-      (sum, transaction) =>
-          sum + tp.budgetExpenseAmountForTransaction(transaction),
-    );
+    final unbudgetedTxns = <Transaction>[];
+    var unbudgetedAmount = 0.0;
+    if (!hasCatchAllBudget) {
+      for (final transaction in debits) {
+        if (tp.isSelfTransfer(transaction)) continue;
+        final amount = _unbudgetedAmountForTransaction(
+          transaction,
+          budgetedCatIds,
+          tp,
+        );
+        if (amount <= 0) continue;
+        unbudgetedTxns.add(transaction);
+        unbudgetedAmount += amount;
+      }
+    }
 
     return RefreshIndicator(
       color: AppColors.primaryLight,
@@ -765,7 +794,7 @@ class RedesignBudgetPageState extends State<RedesignBudgetPage> {
 
     // Transactions for this budget
     final txns =
-        debits.where((t) => _transactionMatchesBudget(t, budget)).toList();
+        debits.where((t) => _transactionMatchesBudget(t, budget, tp)).toList();
     // Sort newest first
     txns.sort((a, b) {
       final ta = a.time != null ? DateTime.tryParse(a.time!) : null;
@@ -1508,6 +1537,26 @@ class _UnbudgetedSpendingCard extends StatelessWidget {
 // _UnbudgetedTransactionsPage
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Own spending of [transaction] outside [budgetedCategoryIds]. Split
+/// parts in a budgeted category, loans and bill shares are left out.
+double _unbudgetedAmountForTransaction(
+  Transaction transaction,
+  Set<int> budgetedCategoryIds,
+  TransactionProvider transactionProvider,
+) {
+  final own = transactionProvider.budgetExpenseAmountForCategories(
+    transaction,
+    matchesCategory: (_) => true,
+    matchAll: true,
+  );
+  final budgeted = transactionProvider.budgetExpenseAmountForCategories(
+    transaction,
+    matchesCategory: budgetedCategoryIds.contains,
+  );
+  final unbudgeted = own - budgeted;
+  return unbudgeted > splitAmountEpsilon ? unbudgeted : 0.0;
+}
+
 class _UnbudgetedTransactionsPage extends StatelessWidget {
   final DateTime selectedMonth;
   final AppCalendarOption calendar;
@@ -1557,7 +1606,12 @@ class _UnbudgetedTransactionsPage extends StatelessWidget {
             if (dt == null) return false;
             if (dt.isBefore(monthStart) || !dt.isBefore(monthEnd)) return false;
             if (provider.isSelfTransfer(t)) return false;
-            return !t.selectedCategoryIds.any(budgetedCategoryIds.contains);
+            return _unbudgetedAmountForTransaction(
+                  t,
+                  budgetedCategoryIds,
+                  provider,
+                ) >
+                0;
           }).toList()
             ..sort((a, b) {
               final ta = a.time != null ? DateTime.tryParse(a.time!) : null;

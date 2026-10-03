@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:totals/models/loan_debt_entry.dart';
 import 'package:totals/models/person.dart';
 import 'package:totals/models/transaction.dart';
+import 'package:totals/models/transaction_split.dart';
 import 'package:totals/services/person_analytics_service.dart';
 
 final DateTime _now = DateTime(2026, 9, 1);
@@ -187,6 +188,83 @@ void main() {
     expect(abebe.lent, 0);
     expect(abebe.borrowed, 700);
     expect(analytics.statsFor(1).lentOutstanding, 700);
+  });
+
+  test('loan and bill-share splits count as money lent', () {
+    TransactionSplit split(
+      String parent,
+      double amount, {
+      int? personId,
+      int? categoryId,
+      TransactionSplitKind kind = TransactionSplitKind.billShare,
+      TransactionSplitStatus status = TransactionSplitStatus.pending,
+    }) {
+      return TransactionSplit(
+        parentReference: parent,
+        amount: amount,
+        personId: personId,
+        categoryId: categoryId,
+        kind: kind,
+        status: kind.isOwedByPerson ? status : null,
+        createdAt: _now,
+        updatedAt: _now,
+      );
+    }
+
+    final analytics = service.build(
+      people: people,
+      transactions: [
+        _transaction('dinner', 900, 'DEBIT', '2026-09-12T20:00:00.000'),
+        _transaction('sara-cash', 400, 'DEBIT', '2026-09-13T10:00:00.000'),
+        _transaction('old-dinner', 300, 'DEBIT', '2026-07-01T20:00:00.000'),
+      ],
+      links: {
+        'dinner': _link('dinner', 4),
+        'sara-cash': _link('sara-cash', 1),
+      },
+      loanEntries: const [],
+      repayments: const [],
+      splitsByReference: {
+        'dinner': [
+          split('dinner', 300, personId: 1),
+          split(
+            'dinner',
+            200,
+            personId: 2,
+            status: TransactionSplitStatus.paid,
+          ),
+          split('dinner', 100,
+              categoryId: 5, kind: TransactionSplitKind.expense),
+        ],
+        // Paid to Sara, but 250 of it is a loan to her.
+        'sara-cash': [
+          split('sara-cash', 250, personId: 1, kind: TransactionSplitKind.loan),
+        ],
+        'old-dinner': [split('old-dinner', 100, personId: 2)],
+        'missing-parent': [split('missing-parent', 50, personId: 2)],
+      },
+      expenseAmount: _expense,
+      incomeAmount: _income,
+      from: DateTime(2026, 9, 1),
+      to: DateTime(2026, 10, 1),
+    );
+
+    final sara = analytics.statsFor(1);
+    expect(sara.lent, 550);
+    expect(sara.lentOutstanding, 550);
+    expect(sara.loanCount, 2);
+    expect(sara.spent, 150, reason: 'the loan part is not spending');
+    expect(sara.transactionCount, 2);
+
+    final abebe = analytics.statsFor(2);
+    expect(abebe.lent, 200);
+    expect(abebe.lentOutstanding, 0, reason: 'paid shares are settled');
+    expect(abebe.transactionCount, 1);
+    expect(abebe.lastActivity, DateTime.parse('2026-09-12T20:00:00.000'));
+
+    // The restaurant still received the full payment.
+    expect(analytics.statsFor(4).spent, 900);
+    expect(analytics.topBorrowers().first.personId, 1);
   });
 
   test('unknown people get empty stats', () {
