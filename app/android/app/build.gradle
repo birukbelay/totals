@@ -2,7 +2,14 @@ plugins {
     id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
-    id "com.google.gms.google-services"
+}
+
+// Firebase (shared expense push) needs a google-services.json, which is not
+// in the repo. Without one the app builds and push stays disabled.
+def hasGoogleServicesJson = file('google-services.json').exists() ||
+        fileTree('src') { include '*/google-services.json', '*/*/google-services.json' }.files.size() > 0
+if (hasGoogleServicesJson) {
+    apply plugin: "com.google.gms.google-services"
 }
 
 def localProperties = new Properties()

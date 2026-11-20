@@ -64,7 +64,10 @@ dependencies:
   google_fonts: ^8.1.0
   in_app_update: ^4.2.5
   pretty_qr_code: ^3.6.0
-  phosphor_flutter: ^2.1.0
+  # Patched copy: phosphor_flutter 2.1.0 subclasses IconData, which is a
+  # final class in newer Flutter releases.
+  phosphor_flutter:
+    path: packages/phosphor_flutter
   kenat: ^1.0.1
   timezone: ^0.9.4
   cryptography: ^2.7.0

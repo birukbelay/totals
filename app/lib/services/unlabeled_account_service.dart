@@ -66,6 +66,20 @@ class UnlabeledAccountService {
   Future<UnlabeledLabelResult> labelSavedTransactions({
     required int bankId,
     required String accountNumber,
+  }) {
+    return labelSavedTransactionsForAccounts(
+      bankId: bankId,
+      accountNumbers: [accountNumber],
+    );
+  }
+
+  /// [labelSavedTransactions] for several accounts of [bankId] added
+  /// together. Labeling once after all of them exist keeps the bank's default
+  /// account from claiming rows that name one of the others. The result's
+  /// balance is the one set on the first of [accountNumbers].
+  Future<UnlabeledLabelResult> labelSavedTransactionsForAccounts({
+    required int bankId,
+    required List<String> accountNumbers,
   }) async {
     final transactions =
         await _transactionRepository.getUnlabeledTransactions(bankId: bankId);
@@ -92,13 +106,17 @@ class UnlabeledAccountService {
     }
     if (labeled == 0) return const UnlabeledLabelResult();
 
-    final balance = await _applyLatestBalance(
-      accounts: accounts,
-      bankId: bankId,
-      accountNumber: accountNumber,
-      ownReferences: assignments[accountNumber] ?? const <String>[],
-      transactions: transactions,
-    );
+    double? balance;
+    for (var i = 0; i < accountNumbers.length; i++) {
+      final applied = await _applyLatestBalance(
+        accounts: accounts,
+        bankId: bankId,
+        accountNumber: accountNumbers[i],
+        ownReferences: assignments[accountNumbers[i]] ?? const <String>[],
+        transactions: transactions,
+      );
+      if (i == 0) balance = applied;
+    }
 
     var cashLegs = 0;
     try {

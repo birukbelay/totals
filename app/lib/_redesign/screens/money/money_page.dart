@@ -27,12 +27,14 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:totals/services/account_registration_service.dart';
 import 'package:totals/services/account_transaction_reparse_service.dart';
 import 'package:totals/services/atm_cash_backfill_service.dart';
+import 'package:totals/services/auto_account_service.dart';
 import 'package:totals/services/account_sync_status_service.dart';
 import 'package:totals/services/bank_detection_service.dart';
 import 'package:totals/services/bank_statement_description_service.dart';
 import 'package:totals/services/bank_statement_pdf_service.dart';
 import 'package:totals/services/fallback_sms_parser.dart';
 import 'package:totals/services/sms_config_service.dart';
+import 'package:totals/services/sms_service.dart';
 import 'package:totals/utils/app_date_format.dart';
 import 'package:totals/utils/account_reconciliation.dart';
 import 'package:totals/utils/category_filter_utils.dart';
@@ -43,6 +45,7 @@ import 'package:totals/utils/text_utils.dart';
 import 'package:totals/utils/transaction_amounts.dart';
 import 'package:totals/utils/unlabeled_accounts.dart';
 import 'package:totals/_redesign/screens/loans_page.dart';
+import 'package:totals/_redesign/screens/people_page.dart';
 import 'package:totals/widgets/add_cash_transaction_sheet.dart';
 import 'package:totals/widgets/inline_bank_selector.dart';
 import 'package:totals/_redesign/widgets/transaction_category_sheet.dart';
@@ -65,7 +68,7 @@ class RedesignMoneyPage extends StatefulWidget {
   State<RedesignMoneyPage> createState() => RedesignMoneyPageState();
 }
 
-enum _TopTab { activity, accounts }
+enum _TopTab { activity, accounts, people }
 
 enum _SubTab { transactions, analytics, ledger }
 
@@ -2090,28 +2093,30 @@ class RedesignMoneyPageState extends State<RedesignMoneyPage>
               ),
             ),
             Expanded(
-              child: _topTab == _TopTab.activity
-                  ? Selector<TransactionProvider, _ProviderContentVersion>(
-                      selector: (_, provider) => _ProviderContentVersion(
-                        dataVersion: provider.dataVersion,
-                        isLoading: provider.isLoading,
-                      ),
-                      builder: (context, _, __) => _buildActivityContent(
-                          context.read<TransactionProvider>()),
-                    )
-                  : Consumer<AccountSyncStatusService>(
-                      builder: (context, syncStatusService, _) => Selector<
-                          TransactionProvider, _ProviderContentVersion>(
-                        selector: (_, provider) => _ProviderContentVersion(
-                          dataVersion: provider.dataVersion,
-                          isLoading: provider.isLoading,
+              child: _topTab == _TopTab.people
+                  ? const PeoplePage(embedded: true)
+                  : _topTab == _TopTab.activity
+                      ? Selector<TransactionProvider, _ProviderContentVersion>(
+                          selector: (_, provider) => _ProviderContentVersion(
+                            dataVersion: provider.dataVersion,
+                            isLoading: provider.isLoading,
+                          ),
+                          builder: (context, _, __) => _buildActivityContent(
+                              context.read<TransactionProvider>()),
+                        )
+                      : Consumer<AccountSyncStatusService>(
+                          builder: (context, syncStatusService, _) => Selector<
+                              TransactionProvider, _ProviderContentVersion>(
+                            selector: (_, provider) => _ProviderContentVersion(
+                              dataVersion: provider.dataVersion,
+                              isLoading: provider.isLoading,
+                            ),
+                            builder: (context, _, __) => _buildAccountsContent(
+                              context.read<TransactionProvider>(),
+                              syncStatusService,
+                            ),
+                          ),
                         ),
-                        builder: (context, _, __) => _buildAccountsContent(
-                          context.read<TransactionProvider>(),
-                          syncStatusService,
-                        ),
-                      ),
-                    ),
             ),
           ],
         ),
@@ -3624,8 +3629,24 @@ class RedesignMoneyPageState extends State<RedesignMoneyPage>
                 onBankTap: (bankId) => setState(() => _selectedBankId = bankId),
                 onAddAccount: _showAddAccountSheet,
                 onLabelAccount: _showLabelAccountSheet,
-              )
-            else ...[
+              ),
+            if (isOverview) ...[
+              const SizedBox(height: 12),
+              ValueListenableBuilder<bool>(
+                valueListenable: AutoAccountService.running,
+                builder: (context, isFinding, _) => _CashActionButton(
+                  label: isFinding
+                      ? 'Reading bank messages...'
+                      : 'Find accounts from messages',
+                  icon: AppIcons.refresh,
+                  color: AppColors.primaryDark,
+                  outlined: true,
+                  isLoading: isFinding,
+                  onTap:
+                      isFinding ? null : () => _findAccountsFromSms(provider),
+                ),
+              ),
+            ] else ...[
               ...accounts.map((account) {
                 final isCash = account.bankId == CashConstants.bankId;
                 final acctTxnCount = account.totalTransactions.toInt();
@@ -4066,6 +4087,48 @@ class RedesignMoneyPageState extends State<RedesignMoneyPage>
         },
       ),
     );
+  }
+
+  Future<void> _findAccountsFromSms(TransactionProvider provider) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final status = await Permission.sms.request();
+    if (!mounted) return;
+    if (!status.isGranted) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(context.l10nTextRead(
+            'Allow SMS access to find accounts from bank messages',
+          )),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    try {
+      final result = await AutoAccountService(smsService: SmsService())
+          .run(fullImport: true);
+      await provider.loadData();
+      if (!mounted) return;
+      final message = result.accountsAdded > 0
+          ? '${context.l10nTextRead('Accounts added')}: ${result.accountsAdded}'
+          : result.messagesAdded > 0
+              ? '${context.l10nTextRead('Transactions added')}: ${result.messagesAdded}'
+              : context.l10nTextRead('No new accounts found');
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('${context.l10nTextRead('Error')}: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   void _showLabelAccountSheet(UnlabeledAccountGroup group) {
@@ -5657,6 +5720,12 @@ class _TopTabBar extends StatelessWidget {
           label: 'Accounts',
           selected: selectedTab == _TopTab.accounts,
           onTap: () => onTabChanged(_TopTab.accounts),
+        ),
+        const SizedBox(width: 20),
+        _TopTabItem(
+          label: 'People',
+          selected: selectedTab == _TopTab.people,
+          onTap: () => onTabChanged(_TopTab.people),
         ),
       ],
     );

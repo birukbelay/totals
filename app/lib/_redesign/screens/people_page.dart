@@ -50,7 +50,10 @@ Color personTypeColor(PersonType type) {
 }
 
 class PeoplePage extends StatefulWidget {
-  const PeoplePage({super.key});
+  /// Shown as a tab inside another page, which supplies the title.
+  final bool embedded;
+
+  const PeoplePage({super.key, this.embedded = false});
 
   @override
   State<PeoplePage> createState() => _PeoplePageState();
@@ -100,17 +103,19 @@ class _PeoplePageState extends State<PeoplePage> {
 
         return Scaffold(
           backgroundColor: AppColors.background(context),
-          appBar: AppBar(
-            backgroundColor: AppColors.background(context),
-            elevation: 0,
-            title: Text(
-              context.l10nText('People'),
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w800,
-                color: AppColors.textPrimary(context),
-              ),
-            ),
-          ),
+          appBar: widget.embedded
+              ? null
+              : AppBar(
+                  backgroundColor: AppColors.background(context),
+                  elevation: 0,
+                  title: Text(
+                    context.l10nText('People'),
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.textPrimary(context),
+                    ),
+                  ),
+                ),
           floatingActionButton: FloatingActionButton.extended(
             onPressed: () => _addPerson(provider),
             backgroundColor: AppColors.primaryLight,
@@ -119,7 +124,7 @@ class _PeoplePageState extends State<PeoplePage> {
             label: Text(context.l10nText('Add person')),
           ),
           body: ListView(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 96),
+            padding: EdgeInsets.fromLTRB(20, widget.embedded ? 16 : 4, 20, 96),
             children: [
               if (provider.people.isNotEmpty) ...[
                 _PeopleInsights(

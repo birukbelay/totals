@@ -58,6 +58,12 @@ void main() {
         ),
         isNull,
       );
+      expect(
+        suggestedAccountHolderNameFromSms(
+          'Dear ABEBE KEBEDE your Account 1*****6789 has been debited.',
+        ),
+        'ABEBE KEBEDE',
+      );
     });
 
     test('uses only a unique owner greeting and rejects body mentions', () {
@@ -543,6 +549,54 @@ with ETB 1,000.00 on 27/11/2023. Your current balance is ETB 991.00.''';
         isNull,
       );
     });
+
+    test('a greeting for someone with two accounts uses the parsed number', () {
+      final savings = _account(
+        bankId: 1,
+        number: '1000005555',
+        holder: 'Abebe',
+      );
+      final current = _account(
+        bankId: 1,
+        number: '1000007777',
+        holder: 'Abebe',
+      );
+      final other = _account(
+        bankId: 1,
+        number: '1000009999',
+        holder: 'Bob',
+      );
+      const body = 'Dear Abebe your Account 1*****7777 has been debited with '
+          'ETB 100.00. Your Current Balance is ETB 900.00';
+
+      expect(
+        resolveSmsOwnership(
+          bank: bank,
+          accounts: <Account>[savings, current, other],
+          messageBody: body,
+          parsedAccountNumber: '1*****7777',
+        ),
+        same(current),
+      );
+      expect(
+        resolveSmsOwnership(
+          bank: bank,
+          accounts: <Account>[savings, current, other],
+          messageBody: 'Dear Abebe your Account 1*****9999 has been debited '
+              'with ETB 100.00.',
+          parsedAccountNumber: '1*****9999',
+        ),
+        isNull,
+        reason: 'The greeting names Abebe, so Bob\'s account is not a match',
+      );
+    });
+  });
+
+  test('a wallet placeholder number only matches itself', () {
+    final bank = _telebirrBank();
+    expect(canonicalAccountNumber(bank, 'Telebirr'), 'TELEBIRR');
+    expect(accountNumbersMatch(bank, 'TELEBIRR', 'telebirr'), isTrue);
+    expect(accountNumbersMatch(bank, 'TELEBIRR', '0912345678'), isFalse);
   });
 }
 

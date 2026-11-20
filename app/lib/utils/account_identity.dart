@@ -23,7 +23,12 @@ String? canonicalAccountNumber(Bank bank, String? raw) {
         (digits.startsWith('9') || digits.startsWith('7'))) {
       return '0$digits';
     }
-    return digits.isEmpty ? null : digits;
+    if (digits.isNotEmpty) return digits;
+    // A wallet added before its phone number is known keeps a placeholder
+    // name such as "TELEBIRR", which only ever matches itself.
+    final placeholder =
+        value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+    return placeholder.isEmpty ? null : placeholder;
   }
 
   final compact = value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
@@ -247,10 +252,27 @@ Account? resolveSmsOwnership({
     return null;
   }
   if (greetingOwner != null) {
-    return resolveAccountOwnership(
+    final owner = resolveAccountOwnership(
       bank: bank,
       accounts: bankAccounts,
       parsedAccountHolderName: greetingOwner,
+    );
+    if (owner != null) return owner;
+    // One person can hold several accounts at the bank. The account number
+    // then picks one of theirs, never an account of someone else.
+    final namesakes = bankAccounts
+        .where((account) =>
+            accountHolderNamesMatch(greetingOwner, account.accountHolderName))
+        .toList(growable: false);
+    final contextualNumbers = ownerAccountNumbersFromMessage(messageBody);
+    if (contextualNumbers.isNotEmpty) {
+      return _uniqueNumberMatch(bank, namesakes, contextualNumbers);
+    }
+    return resolveAccountOwnership(
+      bank: bank,
+      accounts: namesakes,
+      parsedAccountNumber: bank.simBased == true ? null : parsedAccountNumber,
+      sourceSubscriptionId: sourceSubscriptionId,
     );
   }
 
@@ -260,23 +282,9 @@ Account? resolveSmsOwnership({
   // an account number explicitly anchored to "your account". Treat ambiguous
   // or unmatched explicit context as a veto instead of falling back to the
   // counterparty number.
-  final contextualNumbers = _ownerAccountNumbersFromMessage(messageBody);
+  final contextualNumbers = ownerAccountNumbersFromMessage(messageBody);
   if (contextualNumbers.isNotEmpty) {
-    final contextualMatches = bankAccounts
-        .where(
-          (account) => contextualNumbers.any(
-            (number) => accountNumbersMatch(
-              bank,
-              number,
-              account.accountNumber,
-            ),
-          ),
-        )
-        .toList(growable: false);
-    if (contextualMatches.length == 1) {
-      return contextualMatches.single;
-    }
-    return null;
+    return _uniqueNumberMatch(bank, bankAccounts, contextualNumbers);
   }
 
   final resolved = resolveAccountOwnership(
@@ -301,7 +309,24 @@ Account? resolveSmsOwnership({
   return null;
 }
 
-List<String> _ownerAccountNumbersFromMessage(String messageBody) {
+Account? _uniqueNumberMatch(
+  Bank bank,
+  List<Account> accounts,
+  List<String> numbers,
+) {
+  final matches = accounts
+      .where(
+        (account) => numbers.any(
+          (number) => accountNumbersMatch(bank, number, account.accountNumber),
+        ),
+      )
+      .toList(growable: false);
+  return matches.length == 1 ? matches.single : null;
+}
+
+/// Account numbers the SMS explicitly calls the user's own ("your telebirr
+/// account 2519…"), as written in the message.
+List<String> ownerAccountNumbersFromMessage(String messageBody) {
   final matches = RegExp(
     r'''\byour\s+(?:(?:e-?money|bank|telebirr)\s+)?account(?:\s+(?:number|no\.?))?\s*(?:is|:)?\s*['"\u2018\u2019]?([+0-9][+0-9Xx*\\/\-\s]{2,39})''',
     caseSensitive: false,
@@ -337,11 +362,17 @@ String? suggestedAccountHolderNameFromSms(String messageBody) {
     r'^\s*(?:dear|hi|hello)\s+([^,;:\r\n]{1,100})',
     caseSensitive: false,
   ).firstMatch(messageBody);
-  final raw = match
-      ?.group(1)
-      ?.trim()
-      .replaceAll(RegExp(r'[\s.!]+$'), '')
-      .replaceAll(RegExp(r'\s+'), ' ');
+  var raw = match?.group(1)?.trim().replaceAll(RegExp(r'\s+'), ' ');
+  // Messages without a comma run on after the name ("Dear ABEBE your
+  // Account ..."), so the name ends where the message text begins.
+  if (raw != null) {
+    final end = RegExp(
+      r'\s(?:your|you|thank|thanks|we|has|have|is)\b|[\d.!]',
+      caseSensitive: false,
+    ).firstMatch(raw);
+    if (end != null) raw = raw.substring(0, end.start);
+    raw = raw.replaceAll(RegExp(r'[\s.!]+$'), '');
+  }
   final canonical = canonicalAccountHolderName(raw);
   if (canonical == null || _isGenericAccountGreeting(canonical)) return null;
   return raw;

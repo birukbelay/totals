@@ -257,11 +257,37 @@ class SmsService {
     return result;
   }
 
+  /// Parses every bank SMS in the inbox. Messages of banks without a
+  /// registered account are saved as unlabeled rows; already saved messages
+  /// are skipped as duplicates.
+  Future<TodaySmsSyncResult> importAllBankSms() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return const TodaySmsSyncResult();
+    }
+
+    final permissionStatus = await Permission.sms.status;
+    if (!permissionStatus.isGranted) {
+      return const TodaySmsSyncResult(permissionDenied: true);
+    }
+
+    await _getAtmCashTransferCutoff();
+
+    // Oldest first, so the newest message leaves its balance on the account.
+    return _syncBankSmsRange(
+      start: DateTime.fromMillisecondsSinceEpoch(0),
+      includeStart: true,
+      end: DateTime.now(),
+      includeEnd: true,
+      oldestFirst: true,
+    );
+  }
+
   Future<TodaySmsSyncResult> _syncBankSmsRange({
     required DateTime start,
     required bool includeStart,
     required DateTime end,
     required bool includeEnd,
+    bool oldestFirst = false,
   }) async {
     final lowerBound = start.millisecondsSinceEpoch.toString();
     final upperBound = end.millisecondsSinceEpoch.toString();
@@ -282,7 +308,9 @@ class SmsService {
         SmsColumn.SUBSCRIPTION_ID,
       ],
       filter: filter,
-      sortOrder: [OrderBy(SmsColumn.DATE, sort: Sort.DESC)],
+      sortOrder: [
+        OrderBy(SmsColumn.DATE, sort: oldestFirst ? Sort.ASC : Sort.DESC),
+      ],
     );
 
     return _processInboxMessages(messages);

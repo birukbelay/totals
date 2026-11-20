@@ -32,6 +32,7 @@ import 'package:totals/repositories/user_account_repository.dart';
 import 'package:totals/services/account_ownership_service.dart';
 import 'package:totals/services/app_update_service.dart';
 import 'package:totals/services/account_reparse_result_service.dart';
+import 'package:totals/services/auto_account_service.dart';
 import 'package:totals/services/bank_detection_startup_service.dart';
 import 'package:totals/services/bank_config_service.dart';
 import 'package:totals/services/notification_service.dart';
@@ -304,6 +305,18 @@ class RedesignShellState extends State<RedesignShell>
     }
   }
 
+  /// Reads the bank SMS once and adds the accounts they belong to, then
+  /// shows the new transactions.
+  Future<void> _addAccountsFromSms() async {
+    final result = await AutoAccountService.runOnAppOpen();
+    if (result == null || !result.changedData || !mounted) return;
+    final transactionProvider =
+        Provider.of<TransactionProvider>(context, listen: false);
+    final budgetProvider = Provider.of<BudgetProvider>(context, listen: false);
+    unawaited(transactionProvider.loadData());
+    unawaited(budgetProvider.loadBudgets());
+  }
+
   void _onAuthSuccess() {
     if (!mounted) return;
     setState(() => _isAuthenticated = true);
@@ -314,6 +327,7 @@ class RedesignShellState extends State<RedesignShell>
       await _checkNotificationPermissions();
       if (!mounted || !_isAuthenticated) return;
       unawaited(BankDetectionStartupService.runOnAppOpen());
+      unawaited(_addAccountsFromSms());
 
       final pendingWidgetLaunchTarget = _pendingWidgetLaunchTarget;
       if (pendingWidgetLaunchTarget != null) {
